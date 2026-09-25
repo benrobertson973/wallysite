@@ -1759,6 +1759,7 @@
       return true;
     },
     replaceMenu(cx, cy, clipId, payload) {
+      const withAudio = IM.mediaItemsFromSelection(payload.items).filter((it) => it.type === 'video' && Pr.hasAudio(it));
       const doReplace = (mode) => {
         const items = IM.mediaItemsFromSelection(payload.items).filter((it) => it.type !== 'audio');
         if (!items.length) return;
@@ -1775,6 +1776,15 @@
           const t = clamp(this.xt(pt.x), 0, Pr.duration(this.p));
           IM.edit('Insert', (pp) => Pr.insertAt(pp, t, items));
           IM.select(items.map((i) => i.id));
+        } },
+        { label: 'Audio Only', disabled: !withAudio.length, action: () => {
+          // just the dragged clip's sound, attached below the clip at the drop point
+          const pt = this.toContent({ clientX: cx, clientY: cy });
+          const t = clamp(this.xt(pt.x), 0, Pr.duration(this.p));
+          const auds = withAudio.map((v) => Pr.newItem('audio', { mediaId: v.mediaId, srcIn: v.srcIn, srcOut: v.srcOut, name: v.name, lane: -1 }));
+          const dur = auds.reduce((s, a) => s + Pr.dur(a), 0);
+          IM.edit('Add Audio', (pp) => Pr.connect(pp, auds, t, this.freeLane(t, dur, -1)));
+          IM.select(auds.map((a) => a.id));
         } },
         { separator: true },
         { label: 'Cancel', action: () => {} },
