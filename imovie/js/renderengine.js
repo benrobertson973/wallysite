@@ -188,6 +188,7 @@
 
   // ------------------------------------------------------------------ segmentation
   const SEG_MAX_SEC = 4;
+  const SECTION_VERSION = 2; // bump to retire pre-rendered sections made by an older encoder pipeline
   /** Visual items that affect frames. */
   function visualEntries(L) {
     return L.clips.concat(L.connected.filter((e) => e.item.type !== 'audio'));
@@ -246,7 +247,7 @@
       const fade = {};
       if (st.fadeIn && seg.sF < fadeN) fade.fi = seg.sF;
       if (st.fadeOut && seg.eF > total - fadeN) fade.fo = total - seg.sF;
-      const sig = JSON.stringify({ n: seg.eF - seg.sF, fps, fmt: fmt.key, pf, layers, fade });
+      const sig = JSON.stringify({ v: SECTION_VERSION, n: seg.eF - seg.sF, fps, fmt: fmt.key, pf, layers, fade });
       seg.sig = sig;
       seg.key = fmt.key + '|' + fnv(sig);
     }
@@ -534,10 +535,18 @@
         try { await session.encode(frame, f === seg.sF); } finally { frame.close(); }
       }, opts);
       const packets = await session.flush();
+      const n = seg.eF - seg.sF;
+      if (packets.length !== n) throw new RenderError(`The video encoder returned ${packets.length} frames for ${n}.`, { encoder: true });
+      if (packets[0].type !== 'key') throw new RenderError('The encoder produced an invalid segment.', { encoder: true });
+      // Each frame's time comes from its own frame number. Some hardware encoders hand back wrong timestamps
+      // (all zero, or in the wrong units), which would squeeze the whole movie into an instant; timestamps that
+      // are right but reordered (B-frames) are kept as they are.
       const base = Math.round(seg.sF / fps * 1e6);
-      for (const pk of packets) pk.ts -= base;
-      if (!packets.length || packets[0].type !== 'key') throw new RenderError('The encoder produced an invalid segment.');
-      return { packets, config: session.config, frames: seg.eF - seg.sF };
+      const want = Array.from({ length: n }, (_, i) => Math.round((seg.sF + i) / fps * 1e6) - base);
+      const got = packets.map((pk) => pk.ts - base).sort((a, b) => a - b);
+      const valid = got.every((t, i) => Math.abs(t - want[i]) <= 1000);
+      packets.forEach((pk, i) => { pk.ts = valid ? pk.ts - base : want[i]; pk.dur = Math.round(1e6 / fps); });
+      return { packets, config: session.config, frames: n };
     },
     /** Encode one black frame to learn the decoder configuration this encoder produces. */
     async probeConfig(fmt) {
@@ -1358,6 +1367,14 @@
         const stats = await vt.computePacketStats();
         res.frames = stats.packetCount;
         if (stats.packetCount !== L.durationF) { res.ok = false; res.checks.push(`frame count ${stats.packetCount} ≠ ${L.durationF}`); }
+        // and it must play for as long as the movie (frame times right, not squeezed or stretched)
+        const vdur = await vt.computeDuration();
+        res.videoDuration = vdur;
+        if (Math.abs(vdur - L.durationF / fmt.fps) > 1.5 / fmt.fps) {
+          res.ok = false;
+          res.checks.push(`video lasts ${vdur.toFixed(3)} s ≠ ${(L.durationF / fmt.fps).toFixed(3)} s`);
+          res.badKeys = segs.map((s) => s.key);
+        }
         if (!(await vt.canDecode())) { res.checks.push('decode check skipped (codec not decodable here)'); return res; }
         const sink = new mb.CanvasSink(vt, { width: 96, height: 54, fit: 'fill', poolSize: 2 });
         // choose frames: first & last frame + middle of up to 8 segments

@@ -28,6 +28,7 @@
       el._pendingSeek = null;
       el.addEventListener('seeked', () => {
         el._stamp++;
+        el._hadFrame = true;
         if (el._pendingSeek != null) {
           const t = el._pendingSeek;
           el._pendingSeek = null;
@@ -35,7 +36,7 @@
         }
         this.onFrame && this.onFrame(el);
       });
-      el.addEventListener('loadeddata', () => { el._stamp++; this.onFrame && this.onFrame(el); });
+      el.addEventListener('loadeddata', () => { el._stamp++; el._hadFrame = true; this.onFrame && this.onFrame(el); });
       if (this.kind === 'video' && el.requestVideoFrameCallback) {
         // timestamp of the frame actually on screen (used to look up per-frame stabilization)
         const onVF = (now, meta) => { el._frameTs = meta.mediaTime; el.requestVideoFrameCallback(onVF); };
@@ -62,6 +63,7 @@
         rec.el.src = m.url || '';
         rec.el._stamp++;
         rec.el._frameTs = null;
+        rec.el._hadFrame = false; // (a frame of this file hasn't been decoded yet)
         rec.mediaId = m.id;
         rec.el._pendingSeek = null;
       }
@@ -88,6 +90,9 @@
       for (const r of this.recs) if (r.mediaId === mediaId) { if (r.key) this.release(r.key); r.mediaId = null; r.el.removeAttribute('src'); r.el.load(); }
     }
   }
+
+  /** A video element has a picture to show: decoded now, or its last frame while it seeks to a new position. */
+  function frameReady(el) { return !!el.videoWidth && (el.readyState >= 2 || !!el._hadFrame); }
 
   function seekEl(el, t) {
     if (!isFinite(t)) return;
@@ -486,7 +491,7 @@
       const el = this.vpool.acquire(key, m);
       const playingLive = this.playing && this.rate > 0 && !el.paused && it.type !== 'freeze' && !it.reverse;
       if (!playingLive) seekEl(el, srcTime);
-      if (el.readyState < 2 || !el.videoWidth) return null;
+      if (!frameReady(el)) return null;
       const ts = el._frameTs != null && Math.abs(el._frameTs - el.currentTime) < 0.25 ? el._frameTs : el.currentTime;
       return { src: el, key: 'v' + el._id, w: el.videoWidth, h: el.videoHeight, stamp: playingLive ? null : el._stamp + ':' + el.currentTime.toFixed(4), ts };
     }
@@ -501,7 +506,7 @@
         const key = this.sourcePlay && this.sourcePlay.media === m ? 'source' : 'skim';
         const el = this.vpool.acquire(key, m);
         if (key === 'skim') seekEl(el, s.t);
-        if (el.readyState >= 2 && el.videoWidth) {
+        if (frameReady(el)) {
           Object.assign(base, { kind: 'media', src: { src: el, key: 'v' + el._id, w: el.videoWidth, h: el.videoHeight, stamp: key === 'source' ? null : el._stamp + ':' + el.currentTime.toFixed(4) }, rect: IM.Project.fitRect(m, 0), rot: 0, flip: false, video: IM.Project.defaultVideo(), filter: 'none', time: s.t });
         }
       } else base.kind = 'black';
@@ -529,16 +534,17 @@
           else if (!this.playing) this._schedulePrecise(t, key);
         }
         spec = IM.Compose.frame(this.project, t, provider, opts);
+        if (provider !== this.provider && hasPending(spec)) spec = IM.Compose.frame(this.project, t, this.provider, opts);
         if (pv) this._applyPreview(spec, t, pv);
       } else {
         spec = { base: null, overlays: [], titles: [] };
       }
+      // a picture that isn't decoded yet: keep showing the previous one for a while rather than black
       const pending = hasPending(spec);
-      if (pending && performance.now() - this._pendingSince < 400) {
+      if (pending) {
         if (!this._pendingSince) this._pendingSince = performance.now();
-        return false;
-      }
-      this._pendingSince = pending ? this._pendingSince : 0;
+        if (performance.now() - this._pendingSince < 1200) return false;
+      } else this._pendingSince = 0;
       try { r.render(spec); } catch (e) { console.error(e); }
       this.emit('rendered');
       return true;
