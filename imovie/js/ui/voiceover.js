@@ -16,7 +16,9 @@
       this.inputSel = IM.popupButton([{ value: 'default', label: 'System Setting: Default Microphone' }], 'default', (v) => this.startStream(v), { width: 230 });
       const mute = IM.checkbox('Mute Project', this.muteProject, (v) => { this.muteProject = v; });
       this.bar = h('div.vo-bar', this.recBtn, h('span', 'Input:'), this.inputSel, this.level, mute, h('div', { style: { flex: 1 } }), h('button.btn.small', { on: { click: () => this.close() } }, 'Done'));
-      viewer.el.appendChild(this.bar);
+      // the controls take their own row above the transport (the picture shrinks rather than being covered)
+      viewer.el.insertBefore(this.bar, viewer.transport);
+      setTimeout(() => viewer.layout(), 0);
       this.recBtn.addEventListener('click', () => (this.rec ? this.stop() : this.countdown()));
       await this.startStream('default');
       try {
@@ -107,7 +109,7 @@
     close() {
       if (this.rec) this.stop();
       if (this.stream) { this.stream.getTracks().forEach((t) => t.stop()); this.stream = null; }
-      if (this.bar) { this.bar.remove(); this.bar = null; }
+      if (this.bar) { this.bar.remove(); this.bar = null; setTimeout(() => IM.viewerUI.layout(), 0); }
     },
   };
   IM.voiceover = VO;
