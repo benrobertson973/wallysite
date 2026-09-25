@@ -4,9 +4,11 @@ A browser-based movie editor modeled closely on **iMovie 10 for Mac** — same l
 keyboard shortcuts and magnetic timeline — with a frame-exact export renderer and background
 pre-rendering.
 
-Open `imovie/index.html` from any static web server (for example `python3 -m http.server`,
-then visit `http://localhost:8000/imovie/`). Everything runs locally in the browser; imported
-media and projects are stored in the browser's IndexedDB.
+**To run it**, open `imovie/index.html` in Chrome or Edge — double-clicking the file works, no
+server needed. It can also be served from any static web server (for example run
+`python3 -m http.server` in the repository folder and visit `http://localhost:8000/imovie/`), or
+published with GitHub Pages. Everything runs locally in the browser; imported media and projects
+are stored in the browser's IndexedDB.
 
 Works best in current Chrome, Edge or Safari on macOS or Windows (H.264/AAC export). Browsers
 without H.264 encoding export VP9/WebM automatically.
