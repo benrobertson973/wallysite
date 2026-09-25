@@ -14,8 +14,10 @@
     let w = weight || 400;
     if (st.bold) w = Math.min(900, w + 300);
     const it = (italic || st.italic) ? 'italic ' : '';
-    return `${it}${w} ${Math.max(1, Math.round(px))}px ${IM.fontStack(st.fontOverride ? st.font : (family || st.font))}`;
+    // fractional sizes keep text proportions identical at every render resolution (viewer, 540p … 4K export)
+    return `${it}${w} ${Math.max(1, px).toFixed(2)}px ${IM.fontStack(st.fontOverride ? st.font : (family || st.font))}`;
   }
+  function fontPx(f) { const m = /(\d+(?:\.\d+)?)px/.exec(f); return m ? parseFloat(m[1]) : 16; }
   function setShadow(ctx, S, strength) {
     if (strength === 0) { ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; return; }
     ctx.shadowColor = `rgba(0,0,0,${0.55 * (strength == null ? 1 : strength)})`;
@@ -45,7 +47,7 @@
     if (align === 'center') x0 = o.x - total / 2;
     else if (align === 'right') x0 = o.x - total;
     const m = ctx.measureText('Hg');
-    const asc = m.actualBoundingBoxAscent || parseFloat(o.font.match(/(\d+)px/)[1]) * 0.75;
+    const asc = m.actualBoundingBoxAscent || fontPx(o.font) * 0.75;
     const desc = m.actualBoundingBoxDescent || asc * 0.25;
     if (st.boxes && o.box != null) st.boxes[o.box] = { x: x0, y: o.y - asc, w: Math.max(total, 20), h: asc + desc, align, font: o.font, cx: o.x, color: o.color };
     const alpha = o.alpha == null ? 1 : o.alpha;
@@ -54,7 +56,7 @@
     const drawChar = (s, x, y) => {
       if (outline) {
         ctx.lineJoin = 'round';
-        ctx.lineWidth = Math.max(1.5, parseFloat(o.font.match(/(\d+)px/)[1]) * 0.06);
+        ctx.lineWidth = Math.max(1.5, fontPx(o.font) * 0.06);
         ctx.strokeStyle = st.outlineColor || '#000';
         ctx.strokeText(s, x, y);
       }

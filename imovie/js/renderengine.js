@@ -136,14 +136,21 @@
 
   // ------------------------------------------------------------------ exact provider
   /** Frame provider for Compose that serves frames fetched ahead of rendering. */
+  // Every fetched frame gets a globally unique stamp so a GPU texture is never reused for a different frame,
+  // even across providers/segments/renderers that share texture keys.
+  let frameStamp = 0;
   class ExactProvider {
-    constructor() { this.frames = new Map(); this.stamp = 0; }
-    set(key, f) { const old = this.frames.get(key); if (old && old !== f && old.frame && !old.keep) old.frame.close(); this.frames.set(key, f); }
+    constructor() { this.frames = new Map(); }
+    set(key, f) {
+      const old = this.frames.get(key);
+      if (old && old !== f && old.frame && !old.keep) old.frame.close();
+      if (!f.stamp) f.stamp = 'x' + (++frameStamp);
+      this.frames.set(key, f);
+    }
     video(it) {
       const f = this.frames.get(it.id);
       if (!f) return null;
-      this.stamp++;
-      return { src: f.frame || f.canvas, key: 'x:' + it.id, w: f.w, h: f.h, stamp: 'x' + this.stamp, metaRot: f.rot || 0 };
+      return { src: f.frame || f.canvas, key: 'x:' + it.id, w: f.w, h: f.h, stamp: f.stamp, metaRot: f.rot || 0 };
     }
     image(it, m) { return m.image ? { src: m.image, key: 'img:' + m.id, w: m.width, h: m.height, stamp: 1 } : null; }
     clear(keepFreeze) {
@@ -874,9 +881,13 @@
         if (!(await vt.canDecode())) { res.checks.push('decode check skipped (codec not decodable here)'); return res; }
         const sink = new mb.CanvasSink(vt, { width: 96, height: 54, fit: 'fill', poolSize: 2 });
         // choose frames: first & last frame + middle of up to 8 segments
+        // first/last frame of the movie, plus the boundaries (where sections are spliced) and middle of sections
         const picks = new Set([0, L.durationF - 1]);
-        const step = Math.max(1, Math.floor(segs.length / 8));
-        for (let i = 0; i < segs.length; i += step) picks.add(Math.floor((segs[i].sF + segs[i].eF - 1) / 2));
+        const step = Math.max(1, Math.floor(segs.length / 10));
+        for (let i = 0; i < segs.length; i += step) {
+          picks.add(segs[i].sF); picks.add(segs[i].eF - 1);
+          picks.add(Math.floor((segs[i].sF + segs[i].eF - 1) / 2));
+        }
         const frames = Array.from(picks).filter((f) => f >= 0).sort((a, b) => a - b);
         const small = document.createElement('canvas'); small.width = 96; small.height = 54;
         const sctx = small.getContext('2d', { willReadFrequently: true });
