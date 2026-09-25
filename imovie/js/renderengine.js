@@ -750,6 +750,7 @@
     return st;
   }
   function closeStreams() { for (const st of streams.values()) st.close(); streams.clear(); }
+  function closeStream(m, t0) { const k = m.id + '|' + t0, st = streams.get(k); if (st) { st.close(); streams.delete(k); } }
   const isShort = (m) => !!m.builtin || (m.duration > 0 ? m.duration <= WHOLE_MAX_SEC && m.size < WHOLE_MAX_BYTES : m.size < 40 * 1024 * 1024);
 
   // Windowed-sinc interpolation (Kaiser, 48 taps at the lower of the two rates) for sources that aren't 48 kHz.
@@ -928,24 +929,26 @@
     if (audioCache.has(key)) { const b = audioCache.get(key); audioCache.delete(key); audioCache.set(key, b); return b; }
     const outLen = Math.max(1, Math.round(e.dur * AUDIO_SR));
     let ch;
-    if (Math.abs(sp - 1) < 1e-4) {
-      ch = await plainSamples(it, m, 0, outLen);
-    } else if (it.preservePitch !== false) {
-      // time stretching needs a little real audio around the clip (grains are centred on the clip's edges)
-      const pre = Math.round(0.08 * AUDIO_SR);
-      ch = await decodeSamples(m, it.srcIn, -pre, Math.ceil(e.dur * sp * AUDIO_SR) + 2 * pre);
-      if (ch) ch = wsola(ch, sp, outLen, pre);
-    } else {
-      // varispeed: resample (pitch changes with speed)
-      const src = await plainSamples(it, m, 0, Math.ceil(e.dur * sp * AUDIO_SR) + 2);
-      if (src) {
-        ch = src.map((c) => {
-          const r = new Float32Array(outLen);
-          for (let i = 0; i < outLen; i++) { const x = i * sp, j = Math.floor(x), fr = x - j; const v0 = c[j] || 0, v1 = c[j + 1] || 0; r[i] = v0 + (v1 - v0) * fr; }
-          return r;
-        });
+    try {
+      if (Math.abs(sp - 1) < 1e-4) {
+        ch = await plainSamples(it, m, 0, outLen);
+      } else if (it.preservePitch !== false) {
+        // time stretching needs a little real audio around the clip (grains are centred on the clip's edges)
+        const pre = Math.round(0.08 * AUDIO_SR);
+        ch = await decodeSamples(m, it.srcIn, -pre, Math.ceil(e.dur * sp * AUDIO_SR) + 2 * pre);
+        if (ch) ch = wsola(ch, sp, outLen, pre);
+      } else {
+        // varispeed: resample (pitch changes with speed)
+        const src = await plainSamples(it, m, 0, Math.ceil(e.dur * sp * AUDIO_SR) + 2);
+        if (src) {
+          ch = src.map((c) => {
+            const r = new Float32Array(outLen);
+            for (let i = 0; i < outLen; i++) { const x = i * sp, j = Math.floor(x), fr = x - j; const v0 = c[j] || 0, v1 = c[j + 1] || 0; r[i] = v0 + (v1 - v0) * fr; }
+            return r;
+          });
+        }
       }
-    }
+    } finally { closeStream(m, it.srcIn); } // (read in one go; the result is cached below)
     if (!ch) return null;
     if (it.reverse) ch.forEach((c) => c.reverse());
     const buf = new AudioBuffer({ length: outLen, numberOfChannels: 2, sampleRate: AUDIO_SR });
