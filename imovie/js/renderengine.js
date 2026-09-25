@@ -622,64 +622,228 @@
   };
   IM.keyer = Keyer;
 
-  // ------------------------------------------------------------------ audio: range decode, time-stretch, per-item buffers
+  // ------------------------------------------------------------------ audio: decoding on one 48 kHz grid, time-stretch, per-item buffers
   const audioCache = new Map(); // key -> AudioBuffer (timeline-time, before gain/effects)
   let audioCacheBytes = 0;
   const AUDIO_CACHE_MAX = 400 * 1024 * 1024;
   const AUDIO_SR = 48000;
 
-  /** Decode [a, b) seconds of a media file's audio to Float32 channels at AUDIO_SR. */
-  async function decodeRange(m, a, b) {
-    a = Math.max(0, a); b = Math.max(a + 1e-3, b);
-    let src = null;
-    if (m.audioBuffer) src = m.audioBuffer;
-    else if (m.size < 120 * 1024 * 1024 || m.builtin) {
-      src = await IM.lib.getAudioBuffer(m);
-      if (src && m.size < 40 * 1024 * 1024) m.audioBuffer = src;
-    }
-    if (!src) {
-      const mb = await IM.loadMediabunny();
-      const input = new mb.Input({ source: new mb.BlobSource(m.blob), formats: mb.ALL_FORMATS });
-      const at = await input.getPrimaryAudioTrack();
-      if (!at) return null;
-      const sink = new mb.AudioBufferSink(at);
-      const parts = [];
-      let sr = AUDIO_SR;
-      for await (const { buffer, timestamp } of sink.buffers(Math.max(0, a - 0.1), b + 0.1)) { parts.push({ buffer, timestamp }); sr = buffer.sampleRate; }
-      const len = Math.ceil((b - a) * sr);
-      const out = new AudioBuffer({ length: Math.max(1, len), numberOfChannels: 2, sampleRate: sr });
-      for (const { buffer, timestamp } of parts) {
-        const off = Math.round((timestamp - a) * sr);
-        for (let c = 0; c < 2; c++) {
-          const s = buffer.getChannelData(Math.min(c, buffer.numberOfChannels - 1)), d = out.getChannelData(c);
-          for (let i = 0; i < s.length; i++) { const j = off + i; if (j >= 0 && j < len) d[j] = s[i]; }
-        }
+  /** Left/right pair of decoded channels; 5.1 and quad fold down with the Web Audio speaker mix. */
+  function stereoOf(chs) {
+    if (chs.length >= 6 || chs.length === 4) {
+      const l = chs[0], r = chs[1], n = l.length, L = new Float32Array(n), R = new Float32Array(n);
+      if (chs.length >= 6) { // L R C LFE SL SR
+        const c = chs[2], sl = chs[4], sr = chs[5], k = Math.SQRT1_2;
+        for (let i = 0; i < n; i++) { L[i] = l[i] + k * (c[i] + sl[i]); R[i] = r[i] + k * (c[i] + sr[i]); }
+      } else { // L R SL SR
+        const sl = chs[2], sr = chs[3];
+        for (let i = 0; i < n; i++) { L[i] = 0.5 * (l[i] + sl[i]); R[i] = 0.5 * (r[i] + sr[i]); }
       }
-      return resample(out, 0, out.duration);
+      return [L, R];
     }
-    return resample(src, a, b);
+    return [chs[0], chs[1] || chs[0]];
   }
-  /** Extract [a,b) from an AudioBuffer as stereo channels at AUDIO_SR (linear resampling if needed). */
-  function resample(buf, a, b) {
-    const srIn = buf.sampleRate;
-    const n = Math.max(1, Math.round((b - a) * AUDIO_SR));
-    const ch = [new Float32Array(n), new Float32Array(n)];
-    for (let c = 0; c < 2; c++) {
-      const s = buf.getChannelData(Math.min(c, buf.numberOfChannels - 1));
-      const d = ch[c];
-      if (srIn === AUDIO_SR) {
-        const off = Math.round(a * srIn);
-        for (let i = 0; i < n; i++) { const j = off + i; d[i] = j >= 0 && j < s.length ? s[j] : 0; }
-      } else {
-        const ratio = srIn / AUDIO_SR, off = a * srIn;
-        for (let i = 0; i < n; i++) {
-          const x = off + i * ratio, j = Math.floor(x), fr = x - j;
-          const v0 = j >= 0 && j < s.length ? s[j] : 0, v1 = j + 1 >= 0 && j + 1 < s.length ? s[j + 1] : 0;
-          d[i] = v0 + (v1 - v0) * fr;
-        }
-      }
+  const channelsOf = (buf) => stereoOf(Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c)));
+
+  // Short media are decoded whole (by the browser, straight to 48 kHz) and kept in a small LRU; long media are
+  // streamed while mixing, so memory stays bounded however long the movie is.
+  // A decoded source is {ch: [left, right], sr, base}: ch[c][k] is the file's sample base + k (at time (base + k) / sr).
+  const WHOLE_MAX_SEC = 9 * 60, WHOLE_MAX_BYTES = 150 * 1024 * 1024;
+  const WHOLE_CACHE_MAX = 600 * 1024 * 1024;
+  const wholeCache = new Map(); // media id -> source
+  const wholeJobs = new Map();
+  const wholeFailed = new Set(), noSound = new Set(); // media ids (+ size) the browser couldn't decode whole / without sound
+  const fileKey = (m) => m.id + ':' + (m.size || 0);
+  let wholeBytes = 0;
+  async function wholeAudio(m) {
+    if (m.builtin) {
+      if (!m.audioBuffer) await IM.ensureBuiltin(m);
+      const b = m.audioBuffer;
+      return b ? { ch: channelsOf(b), sr: b.sampleRate, base: 0 } : null;
     }
-    return ch;
+    const hit = wholeCache.get(m.id);
+    if (hit) { wholeCache.delete(m.id); wholeCache.set(m.id, hit); return hit; }
+    if (wholeJobs.has(m.id)) return wholeJobs.get(m.id);
+    const job = (async () => {
+      if (!m.blob) return null;
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      const buf = await new OAC(1, 1, AUDIO_SR).decodeAudioData(await m.blob.arrayBuffer());
+      const s = { ch: channelsOf(buf), sr: buf.sampleRate, base: 0 };
+      s.bytes = s.ch[0].length * (s.ch[1] === s.ch[0] ? 4 : 8);
+      wholeCache.set(m.id, s);
+      wholeBytes += s.bytes;
+      while (wholeBytes > WHOLE_CACHE_MAX && wholeCache.size > 1) {
+        const k = wholeCache.keys().next().value;
+        wholeBytes -= wholeCache.get(k).bytes;
+        wholeCache.delete(k);
+      }
+      return s;
+    })();
+    wholeJobs.set(m.id, job);
+    try { return await job; } finally { wholeJobs.delete(m.id); }
+  }
+  // Long media: one continuous decode per clip, starting a little before its in point and read forward window by
+  // window. Every piece of a clip then comes from the same decoder run, so pieces join sample-exactly even for
+  // codecs whose decoders need to settle after a seek (Opus, HE-AAC).
+  const STREAM_PAD = 0.25;
+  const streams = new Map(); // `${media id}|${t0}` -> RangeStream (LRU)
+  class RangeStream {
+    constructor(m, t0) { this.m = m; this.t0 = t0; this.from = Math.max(0, t0 - STREAM_PAD); this.chunks = []; this.sr = 0; this.done = false; this.dropped = -Infinity; this.queue = Promise.resolve(); }
+    /** null: the file has no sound; undefined: this browser can't decode it. */
+    async open() {
+      const mb = await IM.loadMediabunny();
+      if (!mb || !this.m.blob) return undefined;
+      this.input = new mb.Input({ source: new mb.BlobSource(this.m.blob), formats: mb.ALL_FORMATS });
+      const at = await this.input.getPrimaryAudioTrack();
+      if (!at) return null;
+      if (!(await at.canDecode())) return undefined;
+      this.iter = new mb.AudioBufferSink(at).buffers(this.from)[Symbol.asyncIterator]();
+      return this;
+    }
+    close() {
+      try { if (this.iter && this.iter.return) this.iter.return().catch(() => {}); } catch (e) { /* */ }
+      try { if (this.input && this.input.dispose) this.input.dispose(); } catch (e) { /* */ }
+      this.chunks = [];
+    }
+    end() { const c = this.chunks[this.chunks.length - 1]; return c ? (c.base + c.len) / this.sr : -Infinity; }
+    /** Can a read of clip samples from i0 on be served (reads only move forward)? */
+    covers(i0) { return !this.sr || Math.floor((this.t0 + i0 / AUDIO_SR - 0.01) * this.sr) >= this.dropped; }
+    read(i0, n) {
+      const job = this.queue.then(() => this._read(i0, n));
+      this.queue = job.catch(() => {});
+      return job;
+    }
+    async _read(i0, n) {
+      const a = this.t0 + i0 / AUDIO_SR, b = this.t0 + (i0 + n) / AUDIO_SR;
+      while (!this.done && this.end() < b + 0.01) {
+        const r = await this.iter.next();
+        if (r.done) { this.done = true; break; }
+        const { buffer, timestamp } = r.value;
+        if (!this.sr) this.sr = buffer.sampleRate;
+        const [l, rr] = channelsOf(buffer);
+        this.chunks.push({ base: Math.round(timestamp * this.sr), len: buffer.length, l, r: rr });
+      }
+      const sr = this.sr || AUDIO_SR;
+      const lo = Math.floor((a - 0.01) * sr), hi = Math.ceil((b + 0.01) * sr);
+      const len = Math.max(1, hi - lo), ch = [new Float32Array(len), new Float32Array(len)];
+      for (const c of this.chunks) {
+        const s0 = Math.max(lo, c.base), s1 = Math.min(hi, c.base + c.len);
+        if (s1 > s0) { ch[0].set(c.l.subarray(s0 - c.base, s1 - c.base), s0 - lo); ch[1].set(c.r.subarray(s0 - c.base, s1 - c.base), s0 - lo); }
+      }
+      // keep a little history; later reads start at or after this one's start
+      const keep = lo - Math.round(sr);
+      while (this.chunks.length > 1 && this.chunks[0].base + this.chunks[0].len < keep) { const c = this.chunks.shift(); this.dropped = c.base + c.len; }
+      return resampleTo({ ch, sr, base: lo }, this.t0, i0, n);
+    }
+  }
+  async function streamFor(m, t0, i0) {
+    const key = m.id + '|' + t0;
+    let st = streams.get(key);
+    if (st && !st.covers(i0)) { st.close(); streams.delete(key); st = null; }
+    if (st) { streams.delete(key); streams.set(key, st); return st; }
+    st = new RangeStream(m, t0);
+    let ok;
+    try { ok = await st.open(); } catch (e) { console.warn('audio stream failed', m.name, e); ok = undefined; }
+    if (!ok) { st.close(); return ok; }
+    streams.set(key, st);
+    while (streams.size > 12) { const k = streams.keys().next().value; streams.get(k).close(); streams.delete(k); }
+    return st;
+  }
+  function closeStreams() { for (const st of streams.values()) st.close(); streams.clear(); }
+  const isShort = (m) => !!m.builtin || (m.duration > 0 ? m.duration <= WHOLE_MAX_SEC && m.size < WHOLE_MAX_BYTES : m.size < 40 * 1024 * 1024);
+
+  // Windowed-sinc interpolation (Kaiser, 48 taps at the lower of the two rates) for sources that aren't 48 kHz.
+  const SINC_HW = 24, SINC_PHASES = 2048;
+  const sincTables = new Map();
+  function bessel0(x) {
+    let s = 1, t = 1;
+    for (let k = 1; k < 40; k++) { const q = x / (2 * k); t *= q * q; s += t; if (t < 1e-12 * s) break; }
+    return s;
+  }
+  function sincTable(sr) {
+    let t = sincTables.get(sr);
+    if (t) return t;
+    const down = Math.min(1, AUDIO_SR / sr);   // < 1 when the source rate is higher: cut at 24 kHz instead
+    const fc = 0.955 * down;                   // cutoff as a fraction of the source's Nyquist frequency
+    const hw = Math.ceil(SINC_HW / down), taps = 2 * hw, beta = 7.5, ib = bessel0(beta);
+    const w = new Float32Array((SINC_PHASES + 1) * taps);
+    for (let p = 0; p <= SINC_PHASES; p++) {
+      const frac = p / SINC_PHASES, row = p * taps;
+      let sum = 0;
+      for (let k = 0; k < taps; k++) {
+        const x = k - hw + 1 - frac, u = x / hw;
+        if (u <= -1 || u >= 1) continue;
+        const v = (x === 0 ? 1 : Math.sin(Math.PI * fc * x) / (Math.PI * fc * x)) * bessel0(beta * Math.sqrt(1 - u * u)) / ib;
+        w[row + k] = v; sum += v;
+      }
+      for (let k = 0; k < taps; k++) w[row + k] /= sum; // unity gain at DC for every phase
+    }
+    t = { w, taps, hw };
+    sincTables.set(sr, t);
+    return t;
+  }
+  /** n samples at 48 kHz from source s; sample i is at source time t0 + (i0 + i) / 48000 (exact integer phase). */
+  function resampleTo(s, t0, i0, n) {
+    const out = [new Float32Array(n), new Float32Array(n)];
+    const l = s.ch[0], r = s.ch[1], len = l.length, sr = s.sr;
+    if (sr === AUDIO_SR) {
+      const off = Math.round(t0 * sr) + i0 - s.base;
+      const lo = Math.max(0, -off), hi = Math.min(n, len - off);
+      if (hi > lo) { out[0].set(l.subarray(off + lo, off + hi), lo); out[1].set(r.subarray(off + lo, off + hi), lo); }
+      return out;
+    }
+    const { w, taps, hw } = sincTable(sr);
+    const x0 = t0 * sr, X0 = Math.floor(x0), f0 = x0 - X0;
+    const L = out[0], R = out[1];
+    for (let i = 0; i < n; i++) {
+      // position X0 + f0 + (i0 + i)·sr/48000 split into integer and fraction without rounding drift
+      const num = (i0 + i) * sr, q = Math.floor(num / AUDIO_SR);
+      let fr = f0 + (num - q * AUDIO_SR) / AUDIO_SR, j = X0 + q;
+      if (fr >= 1) { fr -= 1; j++; }
+      const row = Math.round(fr * SINC_PHASES) * taps, k0 = j - hw + 1 - s.base;
+      let a = 0, b = 0;
+      if (k0 >= 0 && k0 + taps <= len) {
+        for (let k = 0; k < taps; k++) { const wk = w[row + k]; a += wk * l[k0 + k]; b += wk * r[k0 + k]; }
+      } else {
+        for (let k = 0; k < taps; k++) { const x = k0 + k; if (x < 0 || x >= len) continue; const wk = w[row + k]; a += wk * l[x]; b += wk * r[x]; }
+      }
+      L[i] = a; R[i] = b;
+    }
+    return out;
+  }
+  /**
+   * n stereo samples at 48 kHz of media m; sample i is at source time t0 + (i0 + i) / 48000. Every request for
+   * one clip passes the clip's in point as t0, so pieces fetched separately join sample-exactly.
+   */
+  async function decodeSamples(m, t0, i0, n) {
+    n = Math.max(1, n);
+    const key = fileKey(m);
+    if (noSound.has(key)) return null;
+    const whole = async () => {
+      if (wholeFailed.has(key)) return undefined;
+      try { const s = await wholeAudio(m); return s ? resampleTo(s, t0, i0, n) : null; } catch (e) { wholeFailed.add(key); return undefined; }
+    };
+    const short = isShort(m);
+    if (short) { const r = await whole(); if (r !== undefined) return r; } // (else the streaming decoder may still read it)
+    const st = await streamFor(m, t0, i0);
+    if (st === null) { noSound.add(key); return null; } // the file has no sound
+    if (st) {
+      try { return await st.read(i0, n); } catch (e) { console.warn('audio stream read failed', m.name, e); }
+    }
+    if (!short) { const r = await whole(); if (r !== undefined) return r; }
+    throw new RenderError(`The sound of “${m.name || 'a clip'}” can’t be decoded by this browser.`);
+  }
+  IM.decodeSamples = decodeSamples;
+  /** 1× clip audio: clip-local samples [i0, i0 + n), silent past the clip's out point. */
+  async function plainSamples(it, m, i0, n) {
+    const out = [new Float32Array(n), new Float32Array(n)];
+    const k = Math.min(n, Math.round((it.srcOut - it.srcIn) * AUDIO_SR) - i0);
+    if (k > 0) {
+      const ch = await decodeSamples(m, it.srcIn, i0, k);
+      if (!ch) return null;
+      out[0].set(ch[0]); out[1].set(ch[1]);
+    }
+    return out;
   }
   /** Pitch-preserving time stretch (WSOLA). rate > 1 = faster/shorter. */
   /**
@@ -763,26 +927,26 @@
     const key = [m.id, it.srcIn.toFixed(5), it.srcOut.toFixed(5), sp, !!it.reverse, it.preservePitch !== false, e.durF, e.dur.toFixed(5)].join('|');
     if (audioCache.has(key)) { const b = audioCache.get(key); audioCache.delete(key); audioCache.set(key, b); return b; }
     const outLen = Math.max(1, Math.round(e.dur * AUDIO_SR));
-    const stretch = Math.abs(sp - 1) >= 1e-4 && it.preservePitch !== false;
-    // time stretching needs a little real audio around the clip (grains are centred on the clip's edges)
-    const ctxSec = stretch ? 0.08 : 0;
-    const srcA = Math.max(0, it.srcIn - ctxSec), srcB = Math.min(stretch ? m.duration || it.srcOut : it.srcOut, it.srcIn + e.dur * sp + (stretch ? ctxSec : 0.05));
-    let ch = await decodeRange(m, srcA, srcB);
-    if (!ch) return null;
+    let ch;
     if (Math.abs(sp - 1) < 1e-4) {
-      ch = ch.map((c) => { const r = new Float32Array(outLen); r.set(c.subarray(0, Math.min(c.length, outLen))); return r; });
-    } else if (stretch) {
-      const pre = Math.round((it.srcIn - srcA) * AUDIO_SR);
-      // audio after the clip's range is only context for grains that straddle its end
-      ch = wsola(ch, sp, outLen, pre);
+      ch = await plainSamples(it, m, 0, outLen);
+    } else if (it.preservePitch !== false) {
+      // time stretching needs a little real audio around the clip (grains are centred on the clip's edges)
+      const pre = Math.round(0.08 * AUDIO_SR);
+      ch = await decodeSamples(m, it.srcIn, -pre, Math.ceil(e.dur * sp * AUDIO_SR) + 2 * pre);
+      if (ch) ch = wsola(ch, sp, outLen, pre);
     } else {
       // varispeed: resample (pitch changes with speed)
-      ch = ch.map((c) => {
-        const r = new Float32Array(outLen);
-        for (let i = 0; i < outLen; i++) { const x = i * sp, j = Math.floor(x), fr = x - j; const v0 = c[j] || 0, v1 = c[j + 1] || 0; r[i] = v0 + (v1 - v0) * fr; }
-        return r;
-      });
+      const src = await plainSamples(it, m, 0, Math.ceil(e.dur * sp * AUDIO_SR) + 2);
+      if (src) {
+        ch = src.map((c) => {
+          const r = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i++) { const x = i * sp, j = Math.floor(x), fr = x - j; const v0 = c[j] || 0, v1 = c[j + 1] || 0; r[i] = v0 + (v1 - v0) * fr; }
+          return r;
+        });
+      }
     }
+    if (!ch) return null;
     if (it.reverse) ch.forEach((c) => c.reverse());
     const buf = new AudioBuffer({ length: outLen, numberOfChannels: 2, sampleRate: AUDIO_SR });
     buf.copyToChannel(ch[0], 0); buf.copyToChannel(ch[1] || ch[0], 1);
@@ -796,6 +960,24 @@
     return buf;
   }
   IM.itemAudio = itemAudio;
+  /** Samples [i0, i0 + n) of itemAudio(e), fetching only that range for 1× clips (long songs and clips). */
+  async function itemSlice(e, i0, n) {
+    const it = e.item;
+    const m = IM.lib.get(it.mediaId);
+    if (!m || m.hasAudio === false) return null;
+    n = Math.min(n, Math.max(1, Math.round(e.dur * AUDIO_SR)) - i0);
+    if (n <= 0) return null;
+    let ch;
+    if (Math.abs((it.speed || 1) - 1) < 1e-4 && !it.reverse) ch = await plainSamples(it, m, i0, n);
+    else {
+      const b = await itemAudio(e);
+      ch = b && [b.getChannelData(0).slice(i0, i0 + n), b.getChannelData(1).slice(i0, i0 + n)];
+    }
+    if (!ch) return null;
+    const buf = new AudioBuffer({ length: n, numberOfChannels: 2, sampleRate: AUDIO_SR });
+    buf.copyToChannel(ch[0], 0); buf.copyToChannel(ch[1], 1);
+    return buf;
+  }
 
   /** Entries that produce sound. */
   function audibleEntries(L) {
@@ -806,8 +988,50 @@
     return out;
   }
   IM.audibleEntries = audibleEntries;
+  const hasChain = (e) => IM.chainKey(e.item.audio) !== 'flat|none|0';
 
-  /** Full offline mix of the movie (exactly what the viewer plays). */
+  const GAIN_STEP = 1 / 100;
+  /**
+   * Context time of movie sample position s (samples from the context start). Positions on a sample boundary are
+   * nudged a hair early so that the browser's time→frame rounding always lands on that very sample.
+   */
+  const whenOf = (s) => { const r = Math.round(s); return Math.max(0, (Math.abs(s - r) < 1e-6 ? r - 1e-7 : s) / AUDIO_SR); };
+  /**
+   * Gain automation of entry e (volume, fades, transition crossfades, ducking) for a context that starts at movie
+   * time cs: linear between points at e.start + k·GAIN_STEP and the entry's end, whatever the context's extent.
+   */
+  function scheduleGain(param, p, L, e, dur, cs, ce) {
+    const it = e.item;
+    const t1 = Math.min(dur, e.end);
+    const pt = (k) => {
+      const t = e.start + k * GAIN_STEP;
+      if (k > 0 && t >= t1) return [t1, IM.itemGain(it, e.dur, e.dur, e) * IM.duckFactor(p, L, t1, it.id)];
+      return [t, IM.itemGain(it, t - e.start, e.dur, e) * IM.duckFactor(p, L, t, it.id)];
+    };
+    let k = 1;
+    if (e.start >= cs) {
+      param.setValueAtTime(0, 0); // (a gain node starts at 1: nothing may leak from the effect chain before the clip)
+      param.setValueAtTime(pt(0)[1], whenOf((e.start - cs) * AUDIO_SR));
+    } else {
+      // start on the ramp that crosses cs, at the value it has there
+      k = Math.max(0, Math.floor((cs - e.start) / GAIN_STEP));
+      while (k > 0 && e.start + k * GAIN_STEP > cs) k--;
+      while (e.start + (k + 1) * GAIN_STEP <= cs) k++;
+      const [ta, va] = pt(k), [tb, vb] = pt(k + 1);
+      param.setValueAtTime(tb > ta ? va + (vb - va) * (cs - ta) / (tb - ta) : vb, 0);
+      k++;
+    }
+    for (; ; k++) {
+      const [t, v] = pt(k);
+      param.linearRampToValueAtTime(v, t - cs);
+      if (t >= ce) return;
+      if (t >= t1) break;
+    }
+    // effect tails end with the clip, fading out quickly like the viewer's
+    param.setTargetAtTime(0, t1 - cs, 0.012);
+  }
+
+  /** Full offline mix of the movie (exactly what the viewer plays). Needs memory for the whole movie. */
   async function mixdown(p, opts) {
     opts = opts || {};
     const L = Pr.layout(p);
@@ -819,30 +1043,98 @@
     master.connect(ctx.destination);
     const entries = audibleEntries(L).filter((e) => e.start < dur);
     let done = 0;
-    for (const e of entries) {
-      const it = e.item;
-      const buf = await itemAudio(e);
-      done++;
-      if (opts.onProgress) opts.onProgress(done / Math.max(1, entries.length));
+    try {
+      for (const e of entries) {
+        if (e.item.audio && e.item.audio.mute) continue;
+        const buf = await itemAudio(e);
+        done++;
+        if (opts.onProgress) opts.onProgress(done / Math.max(1, entries.length));
+        if (!buf) continue;
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const g = ctx.createGain();
+        scheduleGain(g.gain, p, L, e, dur, 0, Infinity);
+        if (hasChain(e)) { const ch = IM.buildAudioChain(ctx, e.item.audio); src.connect(ch.input); ch.output.connect(g); }
+        else src.connect(g);
+        g.connect(master);
+        src.start(whenOf(e.start * AUDIO_SR), 0, Math.min(dur, e.end) - e.start);
+      }
+    } finally { closeStreams(); }
+    return ctx.startRendering();
+  }
+  IM.mixdown = mixdown;
+
+  const MIX_WINDOW = 30 * AUDIO_SR; // samples of movie mixed at a time (memory stays bounded for long movies)
+  const MIX_PREROLL = 6 * AUDIO_SR; // with effects: echo and room tails carry across window edges
+  const MIX_LEAD = 256;             // without: clips that start between two samples settle before the kept part
+  /**
+   * Samples [A, B) of the movie's mix, the same as those samples of mixdown(): same gains, fades, ducking and
+   * effects, every clip's audio on the same sample grid. Rendering starts `pre` samples early; that part is dropped.
+   */
+  async function mixWindow(p, L, A, B, pre) {
+    const dur = Math.max(1 / L.fps, L.duration);
+    const CS = Math.max(0, A - pre);
+    const cs = CS / AUDIO_SR, ce = B / AUDIO_SR;
+    const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const ctx = new OAC(2, Math.max(1, B - CS), AUDIO_SR);
+    const master = ctx.createGain();
+    master.connect(ctx.destination);
+    for (const e of audibleEntries(L)) {
+      const t1 = Math.min(dur, e.end);
+      if (e.start >= dur || e.start >= ce || t1 <= cs || (e.item.audio && e.item.audio.mute)) continue;
+      // the clip's first sample at or after the context start (sample i always plays at e.start + i / 48000)
+      const i0 = e.start >= cs ? 0 : Math.ceil((cs - e.start) * AUDIO_SR - 1e-6);
+      const buf = await itemSlice(e, i0, Math.ceil((ce - e.start) * AUDIO_SR) + 2 - i0);
       if (!buf) continue;
       const src = ctx.createBufferSource();
       src.buffer = buf;
       const g = ctx.createGain();
-      const step = 1 / 100;
-      const t0 = e.start, t1 = Math.min(dur, e.end);
-      g.gain.setValueAtTime(IM.itemGain(it, 0, e.dur, e) * IM.duckFactor(p, L, t0, it.id), t0);
-      for (let t = t0 + step; t < t1; t += step) g.gain.linearRampToValueAtTime(IM.itemGain(it, t - e.start, e.dur, e) * IM.duckFactor(p, L, t, it.id), t);
-      g.gain.linearRampToValueAtTime(IM.itemGain(it, e.dur, e.dur, e) * IM.duckFactor(p, L, t1, it.id), t1);
-      if (IM.chainKey(it.audio) !== 'flat|none|0') {
-        const ch = IM.buildAudioChain(ctx, it.audio);
-        src.connect(ch.input); ch.output.connect(g);
-      } else src.connect(g);
+      scheduleGain(g.gain, p, L, e, dur, cs, ce);
+      if (hasChain(e)) { const chn = IM.buildAudioChain(ctx, e.item.audio); src.connect(chn.input); chn.output.connect(g); }
+      else src.connect(g);
       g.connect(master);
-      src.start(t0, 0, t1 - t0);
+      const at = e.start + i0 / AUDIO_SR;
+      src.start(whenOf(e.start * AUDIO_SR + i0 - CS), 0, t1 - at);
     }
-    return ctx.startRendering();
+    const out = await ctx.startRendering();
+    if (A === CS) return out;
+    const cut = new AudioBuffer({ length: B - A, numberOfChannels: 2, sampleRate: AUDIO_SR });
+    for (let c = 0; c < 2; c++) cut.copyToChannel(out.getChannelData(c).subarray(A - CS, B - CS), c);
+    return cut;
   }
-  IM.mixdown = mixdown;
+  /** Decode a moment of every sound in the movie so that a file the browser can't read fails the share up front. */
+  async function checkAudio(p, onProgress) {
+    const L = Pr.layout(p);
+    const seen = new Set(), list = audibleEntries(L).filter((e) => {
+      const m = IM.lib.get(e.item.mediaId);
+      if (!m || m.hasAudio === false || seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    });
+    try {
+      for (let i = 0; i < list.length; i++) {
+        const it = list[i].item;
+        await decodeSamples(IM.lib.get(it.mediaId), it.srcIn, 0, 480);
+        if (onProgress) onProgress((i + 1) / list.length);
+      }
+    } finally { closeStreams(); }
+  }
+  /** Feed the movie's whole mix to an encoder source, window by window. */
+  async function addMovieAudio(p, asrc, onProgress, state) {
+    const L = Pr.layout(p);
+    const N = Math.ceil(Math.max(1 / L.fps, L.duration) * AUDIO_SR);
+    const pre = audibleEntries(L).some(hasChain) ? MIX_PREROLL : MIX_LEAD;
+    try {
+      for (let A = 0; A < N; A += MIX_WINDOW) {
+        if (state && state.cancelled) throw new AbortRender();
+        const B = Math.min(N, A + MIX_WINDOW);
+        await asrc.add(await mixWindow(p, L, A, B, pre));
+        if (onProgress) onProgress(B / N);
+      }
+    } finally { closeStreams(); }
+  }
+  IM.mixWindow = mixWindow;
+  IM.mixConsts = { AUDIO_SR, MIX_WINDOW, MIX_PREROLL, MIX_LEAD, closeStreams };
 
   // ------------------------------------------------------------------ export
   const Exporter = {
@@ -872,9 +1164,8 @@
         await Cache.load();
         const segs = segmentsFor(p, fmt);
         const refConfig = await Engine.probeConfig(fmt);
-        // audio mix first (fast) so the file has both tracks
         progress(0, 'Preparing audio…');
-        const mix = await mixdown(p, { onProgress: (f) => progress(f * 0.05, 'Preparing audio…') });
+        if (aCodec) await checkAudio(p, (f) => progress(0.05 * f, 'Preparing audio…'));
         const useHandle = !!(o.fileHandle && fmt.container === 'mp4');
         if (useHandle) writable = await o.fileHandle.createWritable();
         const target = useHandle ? new mb.StreamTarget(writable, { chunked: true }) : new mb.BufferTarget();
@@ -883,7 +1174,7 @@
         const vsrc = new mb.EncodedVideoPacketSource(fmt.codec);
         output.addVideoTrack(vsrc, { frameRate: fmt.fps });
         let asrc = null;
-        if (aCodec && mix) { asrc = new mb.AudioBufferSource({ codec: aCodec, bitrate: 192000 }); output.addAudioTrack(asrc); }
+        if (aCodec) { asrc = new mb.AudioBufferSource({ codec: aCodec, bitrate: 192000 }); output.addAudioTrack(asrc); }
         await output.start();
         const totalFrames = L.durationF;
         let framesDone = 0, reused = 0, rendered = 0;
@@ -922,7 +1213,7 @@
           framesDone += seg.eF - seg.sF;
           progress(0.05 + 0.85 * framesDone / totalFrames, 'Rendering…');
         }
-        if (asrc) { progress(0.9, 'Encoding audio…'); await asrc.add(mix); }
+        if (asrc) await addMovieAudio(p, asrc, (f) => progress(0.9 + 0.03 * f, 'Encoding audio…'), state);
         vsrc.close(); if (asrc) asrc.close();
         progress(0.93, 'Finishing…');
         await output.finalize();
@@ -953,7 +1244,6 @@
     },
     cancel() { if (this.running) this.running.cancelled = true; },
     async exportAudioOnly(p, o, mb, progress, state) {
-      const mix = await mixdown(p, { onProgress: (f) => progress(f * 0.7, 'Mixing audio…') });
       if (state.cancelled) throw new AbortRender();
       const codec = await pickAudioCodec('mp4');
       const mp4 = codec === 'aac';
@@ -961,7 +1251,7 @@
       const asrc = new mb.AudioBufferSource({ codec: codec || 'opus', bitrate: 256000 });
       output.addAudioTrack(asrc);
       await output.start();
-      await asrc.add(mix);
+      await addMovieAudio(p, asrc, (f) => progress(f * 0.95, 'Mixing audio…'), state);
       asrc.close();
       await output.finalize();
       progress(1, 'Done');

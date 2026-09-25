@@ -31,8 +31,9 @@
     return m[name];
   }
   function distortionCurve(k) {
-    const n = 1024, curve = new Float32Array(n);
-    for (let i = 0; i < n; i++) { const x = (i * 2) / n - 1; curve[i] = ((3 + k) * x * 20 * Math.PI / 180) / (Math.PI + k * Math.abs(x)); }
+    // odd length: silence maps exactly onto the curve's centre (0), so the shaper adds no DC offset
+    const n = 1025, curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = (i * 2) / (n - 1) - 1; curve[i] = ((3 + k) * x * 20 * Math.PI / 180) / (Math.PI + k * Math.abs(x)); }
     return curve;
   }
 

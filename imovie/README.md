@@ -47,7 +47,11 @@ without H.264 encoding export VP9/WebM automatically.
   resolved before rendering starts.
 - Audio is mixed offline with the same gain, fade, ducking and effect code as live playback;
   speed changes use a pitch-preserving time stretch and reverse plays reversed audio, both in
-  preview and export.
+  preview and export. The mix is made 30 seconds at a time (with a pre-roll so echo and reverb
+  tails carry over), and long media are streamed rather than decoded whole, so memory stays
+  bounded for long movies; the windows join sample-exactly and match a whole-movie mix. Sources
+  that aren't 48 kHz are converted with a windowed-sinc resampler, and every sound in the movie
+  is test-decoded before any video is rendered, so an unreadable file fails the share up front.
 - **Pre-rendering**: while you're idle, the movie is split into content-hashed, shift-invariant
   sections that are rendered and encoded in the background. Exports reuse those sections
   without re-encoding, so unchanged parts of a movie export almost instantly. Every section is
