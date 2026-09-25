@@ -243,7 +243,8 @@
     const p = app.project;
     const L = Pr.layout(p);
     let targets = selItems().filter((f) => { const e = L.byId.get(f.item.id); return e && t > e.start + 0.05 && t < e.end - 0.05; });
-    if (!targets.length && !app.sel.ids.length) {
+    // nothing selected under the playhead: split the movie's clip where the playhead is
+    if (!targets.length) {
       const e = Pr.primaryAt(p, t);
       if (e && t > e.visStart + 0.05 && t < e.visEnd - 0.05) targets = [{ item: e.item, where: 'primary' }];
     }

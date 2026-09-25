@@ -119,6 +119,28 @@
       this.canvas.addEventListener('dblclick', (e) => this.onDbl(e));
       this.canvas.addEventListener('contextmenu', (e) => this.onContext(e));
       this.scroller.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
+      // pinch to zoom: trackpads in Chrome/Edge/Firefox send ctrl+wheel (onWheel); Safari sends gesture events;
+      // touch screens send two touches
+      this.scroller.addEventListener('gesturestart', (e) => { e.preventDefault(); this._pinch = { pps: this.pps, x: e.clientX, y: e.clientY }; });
+      this.scroller.addEventListener('gesturechange', (e) => {
+        e.preventDefault();
+        if (this._pinch && e.scale > 0) this.pinchTo(this._pinch.pps * e.scale, e.clientX || this._pinch.x, e.clientY || this._pinch.y);
+      });
+      this.scroller.addEventListener('gestureend', (e) => { e.preventDefault(); this._pinch = null; });
+      const touchDist = (ts) => Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY);
+      this.scroller.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 2) return;
+        e.preventDefault();
+        if (this.drag) { this.drag = null; this.stopAutoScroll(); } // a second finger turns a drag into a pinch
+        this._pinch = { pps: this.pps, d: Math.max(1, touchDist(e.touches)) };
+      }, { passive: false });
+      this.scroller.addEventListener('touchmove', (e) => {
+        if (e.touches.length !== 2 || !this._pinch || !this._pinch.d) return;
+        e.preventDefault();
+        const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2, my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        this.pinchTo(this._pinch.pps * touchDist(e.touches) / this._pinch.d, mx, my);
+      }, { passive: false });
+      this.scroller.addEventListener('touchend', (e) => { if (e.touches.length < 2) this._pinch = null; });
       window.addEventListener('keydown', (e) => { if (IM.eventKey(e) === 'r' && !IM.isTyping(e) && !e.metaKey && !e.ctrlKey) { this.rKey = true; this.updateCursor(); } });
       window.addEventListener('keyup', (e) => { if (IM.eventKey(e) === 'r') { this.rKey = false; this.updateCursor(); } });
       window.addEventListener('blur', () => { this.rKey = false; });
@@ -1525,7 +1547,7 @@
       if (!this.p) return;
       const t = anchorT != null ? anchorT : app.player.t;
       const vx = this.tx(t) - this.scroller.scrollLeft;
-      this.pps = this.pps * f;
+      this.pps = clamp(this.pps * f, 1.5, 800);
       this.p.settings.zoomSet = true;
       IM.lib.saveProject(this.p);
       this._draw();
@@ -1541,11 +1563,19 @@
       this.scroller.scrollLeft = 0;
       this.redraw();
     },
+    /** Zoom to pps, keeping the moment under the pointer (client coordinates) in place. */
+    pinchTo(pps, clientX, clientY) {
+      if (!this.p) return;
+      const pt = this.toContent({ clientX, clientY });
+      const f = clamp(pps, 1.5, 800) / this.pps;
+      if (Math.abs(f - 1) > 1e-4) this.zoomBy(f, this.xt(pt.x));
+    },
     onWheel(e) {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const pt = this.toContent(e);
-        this.zoomBy(Math.exp(-e.deltaY * 0.01), this.xt(pt.x));
+        const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY; // (lines in Firefox)
+        this.zoomBy(Math.exp(-dy * 0.01), this.xt(pt.x));
         return;
       }
       // vertical wheel over timeline scrolls horizontally when there's no vertical overflow

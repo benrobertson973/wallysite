@@ -78,6 +78,9 @@
     IM.lib.on('projects-changed', () => {});
     IM.setView('projects');
     // persist on leave
+    // a pinch or ctrl+wheel anywhere else must not zoom the whole app (the timeline zooms itself)
+    window.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+    document.addEventListener('gesturestart', (e) => e.preventDefault());
     window.addEventListener('beforeunload', () => { if (app.project) { app.project.playhead = app.player.t; IM.lib.saveProjectNow(app.project); } });
     document.addEventListener('visibilitychange', () => { if (document.hidden && app.project) IM.lib.saveProjectNow(app.project); });
     window.addEventListener('blur', () => IM.$('#window').classList.add('inactive'));

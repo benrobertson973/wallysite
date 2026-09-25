@@ -197,7 +197,7 @@
 .tl-settings { height: 20px; border: none; background: transparent; color: #d0d0d0; font-size: 12px; padding: 0 8px; border-radius: 4px; }
 .tl-settings:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
 .tl-body { flex: 1; min-height: 0; position: relative; }
-.tl-scroll { position: absolute; inset: 0; overflow: auto; }
+.tl-scroll { position: absolute; inset: 0; overflow: auto; touch-action: pan-x pan-y; /* pinches zoom the timeline, not the page */ }
 .tl-scroll::-webkit-scrollbar-thumb { border-width: 3px; }
 .tl-canvas { position: sticky; top: 0; left: 0; display: block; z-index: 1; }
 .tl-sizer { position: absolute; top: 0; left: 0; pointer-events: none; }
