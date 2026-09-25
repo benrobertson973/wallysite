@@ -449,6 +449,7 @@
     scifi: { drone: 'pad', ost: 'lead', stab: 'pad', drums: 'pulse', hit: 'boom', lead: 'lead' },
     documentary: { drone: 'strings', ost: 'pluck', stab: 'piano', drums: 'light', hit: 'soft', lead: 'piano' },
   };
+  const clampN = (v, a, b) => Math.max(a, Math.min(b, v));
   function renderTrailerScore(d) {
     const dur = d.duration;
     const S = session(dur + 0.3, 2.8);
@@ -519,11 +520,23 @@
     chordNotes(root, scale, prog[0], 3).forEach((m, i) => S.play(synth(M.drone, m - 12, tail, 50 + i), titleAt + 0.05, { vel: 0.22, pan: (i - 1) * 0.3, rev: 0.7 }));
     if (creditsAt < end) S.play(synth(M.lead, root + 12 + scale[4], Math.max(0.5, end - creditsAt), 9), creditsAt, { vel: 0.12, rev: 0.7 });
     return S.ctx.startRendering().then((buf) => {
-      // fade the last half second so the movie ends cleanly
-      for (let c = 0; c < buf.numberOfChannels; c++) {
-        const x = buf.getChannelData(c), n = Math.min(x.length, Math.floor(0.5 * SR)), o = Math.floor(end * SR) - n;
-        for (let i = 0; i < n && o + i < x.length; i++) x[o + i] *= 1 - i / n;
-        for (let i = Math.max(0, o + n); i < x.length; i++) x[i] = 0;
+      const chans = Array.from({ length: buf.numberOfChannels }, (x, c) => buf.getChannelData(c));
+      // consistent loudness across moods: bring the body to a target RMS, then a soft limiter keeps peaks < 0.95
+      let sum = 0, n = 0;
+      const a = Math.floor(Math.max(0, logoEnd) * SR), z = Math.floor(Math.max(logoEnd + 1, titleAt) * SR);
+      for (const x of chans) for (let i = a; i < Math.min(z, x.length); i++) { sum += x[i] * x[i]; n++; }
+      const rms = Math.sqrt(sum / Math.max(1, n));
+      const gain = rms > 1e-5 ? clampN(0.13 / rms, 0.4, 4) : 1;
+      const K = 0.75, R = 0.95 - K;
+      for (const x of chans) {
+        for (let i = 0; i < x.length; i++) {
+          const v = x[i] * gain, av = Math.abs(v);
+          x[i] = av <= K ? v : Math.sign(v) * (K + R * Math.tanh((av - K) / R));
+        }
+        // fade the last half second so the movie ends cleanly
+        const fn = Math.min(x.length, Math.floor(0.5 * SR)), o = Math.floor(end * SR) - fn;
+        for (let i = 0; i < fn && o + i < x.length; i++) if (o + i >= 0) x[o + i] *= 1 - i / fn;
+        for (let i = Math.max(0, o + fn); i < x.length; i++) x[i] = 0;
       }
       return buf;
     });

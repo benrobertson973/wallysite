@@ -282,6 +282,13 @@
         ctx.fillStyle = '#ff3b30';
         ctx.fillRect(Math.round(hv.x), hv.seg.y, 1, hv.seg.h);
         if (!bsel.some((b) => b.mediaId === hv.seg.m.id)) this.badge(ctx, hv.seg.pieces[0].x + 4, hv.seg.pieces[0].y + 4, hv.seg.m.kind === 'image' ? 'Photo' : IM.fmtDur(hv.seg.d.b - hv.seg.d.a), font);
+        // trailer: show how much of the clip the selected shot will use
+        if (IM.trailerUI && IM.trailerUI.wantsClick() && hv.seg.m.kind === 'video') {
+          const sg = hv.seg, pps = sg.w / Math.max(1e-6, sg.t1 - sg.t0);
+          const w = Math.max(3, Math.min(IM.trailerUI.selDur() * pps, sg.x + sg.w - hv.x));
+          ctx.fillStyle = 'rgba(248,198,60,0.16)'; ctx.fillRect(hv.x, sg.y, w, sg.h);
+          ctx.strokeStyle = '#f8c63c'; ctx.lineWidth = 2; ctx.strokeRect(hv.x + 1, sg.y + 1, w - 2, sg.h - 2);
+        }
       }
       // playing source playhead
       const sp = app.player.sourcePlay;
