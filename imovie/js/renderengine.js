@@ -346,6 +346,9 @@
     if (c.codec === 'hevc') cfg.hevc = { format: 'hevc' };
     return cfg;
   }
+  const CONTAINER = { mp4: { mime: 'video/mp4', ext: 'mp4' }, mov: { mime: 'video/quicktime', ext: 'mov' }, webm: { mime: 'video/webm', ext: 'webm' } };
+  const canPcm = async (mb) => { try { return await mb.canEncodeAudio('pcm-s16', { numberOfChannels: 2, sampleRate: 48000 }); } catch (e) { return false; } };
+  const audioSource = (mb, codec, bitrate) => new mb.AudioBufferSource(codec.startsWith('pcm') ? { codec } : { codec, bitrate });
   async function pickAudioCodec(container) {
     const mb = await IM.loadMediabunny();
     const list = container === 'mp4' ? ['aac', 'opus'] : ['opus', 'vorbis'];
@@ -1161,23 +1164,32 @@
         const L = Pr.layout(p);
         if (!L.durationF) throw new RenderError('The movie is empty.');
         if (o.audioOnly) return await this.exportAudioOnly(p, o, mb, progress, state);
-        const fmt = await resolveFormat(p, o);
+        let fmt = await resolveFormat(p, o);
         if (!fmt) return await this.exportRealtime(p, o, progress, state);
-        const aCodec = await pickAudioCodec(fmt.container);
+        let aCodec = await pickAudioCodec(fmt.container);
+        if (!aCodec) {
+          // no encoder for compressed sound in this browser: a QuickTime movie with uncompressed sound instead —
+          // never a movie without its sound
+          if (await canPcm(mb)) { fmt = Object.assign({}, fmt, { container: 'mov' }); aCodec = 'pcm-s16'; }
+          else if (audibleEntries(L).length) throw new RenderError('This browser can’t encode sound, so the movie can’t be shared with its audio. Please use a current version of Chrome, Edge or Safari.');
+        }
         await Cache.load();
         const segs = segmentsFor(p, fmt);
         const refConfig = await Engine.probeConfig(fmt);
         progress(0, 'Preparing audio…');
         if (aCodec) await checkAudio(p, (f) => progress(0.05 * f, 'Preparing audio…'));
-        const useHandle = !!(o.fileHandle && fmt.container === 'mp4');
+        // stream straight into the picked file when it has a matching name (an MP4 may be called .mov, not vice versa)
+        const useHandle = !!(o.fileHandle && (fmt.container === 'mp4' || (fmt.container === 'mov' && /\.mov$/i.test(o.fileHandle.name || ''))));
         if (useHandle) writable = await o.fileHandle.createWritable();
         const target = useHandle ? new mb.StreamTarget(writable, { chunked: true }) : new mb.BufferTarget();
-        const format = fmt.container === 'mp4' ? new mb.Mp4OutputFormat({ fastStart: useHandle ? false : 'in-memory' }) : new mb.WebMOutputFormat();
+        const format = fmt.container === 'mp4' ? new mb.Mp4OutputFormat({ fastStart: useHandle ? false : 'in-memory' })
+          : fmt.container === 'mov' ? new mb.MovOutputFormat({ fastStart: useHandle ? false : 'in-memory' })
+          : new mb.WebMOutputFormat();
         output = new mb.Output({ format, target });
         const vsrc = new mb.EncodedVideoPacketSource(fmt.codec);
         output.addVideoTrack(vsrc, { frameRate: fmt.fps });
         let asrc = null;
-        if (aCodec) { asrc = new mb.AudioBufferSource({ codec: aCodec, bitrate: 192000 }); output.addAudioTrack(asrc); }
+        if (aCodec) { asrc = audioSource(mb, aCodec, 192000); output.addAudioTrack(asrc); }
         await output.start();
         const totalFrames = L.durationF;
         let framesDone = 0, reused = 0, rendered = 0;
@@ -1220,7 +1232,7 @@
         vsrc.close(); if (asrc) asrc.close();
         progress(0.93, 'Finishing…');
         await output.finalize();
-        const mime = fmt.container === 'mp4' ? 'video/mp4' : 'video/webm';
+        const { mime, ext } = CONTAINER[fmt.container];
         let blob = null;
         if (useHandle) blob = await o.fileHandle.getFile();
         else blob = new Blob([output.target.buffer], { type: mime });
@@ -1234,7 +1246,7 @@
           return this.export(p, Object.assign({}, o, { retried: true, noCache: ver.badKeys.length === 0 }));
         }
         progress(1, 'Done');
-        return { blob, mime, ext: fmt.container === 'mp4' ? 'mp4' : 'webm', usedHandle: useHandle, verified: ver.ok, verification: ver, stats: { frames: totalFrames, reused, rendered, fmt } };
+        return { blob, mime, ext, usedHandle: useHandle, verified: ver.ok, verification: ver, stats: { frames: totalFrames, reused, rendered, fmt } };
       } catch (e) {
         // cancelled or failed: leave no half-written movie behind (a picked file keeps its previous contents)
         if (output && output.state !== 'finalized') { try { await output.cancel(); } catch (err) { /* */ } }
@@ -1248,18 +1260,24 @@
     cancel() { if (this.running) this.running.cancelled = true; },
     async exportAudioOnly(p, o, mb, progress, state) {
       if (state.cancelled) throw new AbortRender();
-      const codec = await pickAudioCodec('mp4');
-      const mp4 = codec === 'aac';
-      const output = new mb.Output({ format: mp4 ? new mb.Mp4OutputFormat({ fastStart: 'in-memory' }) : new mb.WebMOutputFormat(), target: new mb.BufferTarget() });
-      const asrc = new mb.AudioBufferSource({ codec: codec || 'opus', bitrate: 256000 });
+      let codec = await pickAudioCodec('mp4');
+      // AAC → .m4a, Opus → .webm; no encoder for compressed sound in this browser → an uncompressed .wav
+      const kind = codec === 'aac' ? 'm4a' : codec ? 'webm' : 'wav';
+      if (!codec) {
+        if (!(await canPcm(mb))) throw new RenderError('This browser can’t encode sound. Please use a current version of Chrome, Edge or Safari.');
+        codec = 'pcm-s16';
+      }
+      const format = kind === 'm4a' ? new mb.Mp4OutputFormat({ fastStart: 'in-memory' }) : kind === 'webm' ? new mb.WebMOutputFormat() : new mb.WavOutputFormat();
+      const output = new mb.Output({ format, target: new mb.BufferTarget() });
+      const asrc = audioSource(mb, codec, 256000);
       output.addAudioTrack(asrc);
       await output.start();
       await addMovieAudio(p, asrc, (f) => progress(f * 0.95, 'Mixing audio…'), state);
       asrc.close();
       await output.finalize();
       progress(1, 'Done');
-      const mime = mp4 ? 'audio/mp4' : 'audio/webm';
-      return { blob: new Blob([output.target.buffer], { type: mime }), mime, ext: mp4 ? 'm4a' : 'webm', verified: true, stats: { audioOnly: true } };
+      const mime = { m4a: 'audio/mp4', webm: 'audio/webm', wav: 'audio/wav' }[kind];
+      return { blob: new Blob([output.target.buffer], { type: mime }), mime, ext: kind, verified: true, stats: { audioOnly: true } };
     },
     /** Fallback for browsers without WebCodecs encoding: paced real-time capture. */
     async exportRealtime(p, o, progress, state) {

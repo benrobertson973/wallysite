@@ -169,7 +169,9 @@
           if (item) out.push(item);
         } catch (e) {
           console.warn('import failed', f.name, e);
-          IM.notify('Import Failed', `“${f.name}” could not be imported. The file format may not be supported by this browser.`);
+          if (/\.(heic|heif)$/i.test(f.name) || /image\/hei[cf]/i.test(f.type || '')) {
+            IM.notify('Import Failed', `“${f.name}” is a HEIC photo, which this browser can’t open. Export it as a JPEG (in Photos, choose File ▸ Export) or use Safari.`, { duration: 9000 });
+          } else IM.notify('Import Failed', `“${f.name}” could not be imported. The file format may not be supported by this browser.`);
         }
       }
       return out;
