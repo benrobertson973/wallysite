@@ -18,7 +18,6 @@
     clipEdge: 'rgba(0,0,0,0.6)', placeholder: '#151515',
     blueBg: '#1c3b60', blueWave: '#4d8ee0', blueWaveHi: '#7fb3f5',
     greenBg: '#1b4722', greenWave: '#4cb857', greenWaveHi: '#8fe097',
-    purpleBg: '#35265c', purpleWave: '#9274dd', purpleWaveHi: '#bba6f5',
     title: '#6e51c5', titleHi: '#8d74e0', titleText: '#ffffff',
     sel: '#f8c63c', playhead: '#ffffff', skimmer: '#ff3b30',
     trans: '#555555', transHi: '#6c6c6c', glyph: '#e9e9e9',
@@ -49,16 +48,11 @@
     ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
     ctx.closePath();
   }
-  function audioColors(it, where) {
-    if (it.type === 'audio') {
-      if (it._voiceover || (IM.lib.get(it.mediaId) || {}).source === 'voiceover' || it._detached || isDetached(it)) return ['purpleBg', 'purpleWave', 'purpleWaveHi'];
-      return ['greenBg', 'greenWave', 'greenWaveHi'];
-    }
+  // As in iMovie for Mac: a video clip's own audio is blue; audio-only clips (music, sound effects,
+  // detached audio and voiceover recordings) are green.
+  function audioColors(it) {
+    if (it.type === 'audio') return ['greenBg', 'greenWave', 'greenWaveHi'];
     return ['blueBg', 'blueWave', 'blueWaveHi'];
-  }
-  function isDetached(it) {
-    const m = IM.lib.get(it.mediaId);
-    return !!(m && m.kind === 'video');
   }
 
   // small cached thumbnails for backgrounds / title clips
@@ -195,7 +189,10 @@
         if (e.item.type === 'title') k.title = true; else if (e.item.type === 'audio') k.audio = true; else k.video = true;
         laneKind.set(e.lane, k);
       }
+      // during a drag toward a new lane above, an empty lane opens there (see wantLaneAbove)
+      const reserve = this.reserveAbove || 0;
       const laneH = (lane) => {
+        if (reserve && lane === L.above + 1) return reserve;
         const k = laneKind.get(lane);
         if (lane < 0) return S.audH + 6;
         if (!k) return TITLE_H + 6;
@@ -203,8 +200,9 @@
         return TITLE_H + 6;
       };
       // the committed layout stays fixed while dragging (previews for new lanes draw in the free space)
-      const maxAbove = L.above;
+      const maxAbove = L.above + (reserve ? 1 : 0);
       const maxBelow = L.below;
+      G.reserved = reserve ? L.above + 1 : 0;
       G.laneY = new Map(); G.laneH = new Map();
       let y = TOP_MARGIN;
       for (let lane = maxAbove; lane >= 1; lane--) { G.laneY.set(lane, y); G.laneH.set(lane, laneH(lane)); y += laneH(lane); }
@@ -722,7 +720,12 @@
         const fake = Object.assign({}, gi.g, { x0: x, x1: x + w, y, startX: x - (gi.g.x0 - gi.g.startX) });
         if (gi.g.kind === 'title') { ctx.fillStyle = COL.titleHi; ctx.fillRect(x, y, w, gi.h); }
         else if (gi.g.kind === 'audio' || gi.g.where === 'music') this.drawAudio(ctx, fake, x, x + w, y, gi.h, fake.startX, false, gi.g.where === 'music' ? ['greenBg', 'greenWave', 'greenWaveHi'] : null);
-        else this.drawFilmstrip(ctx, gi.g.item, fake, x, x + w, y, gi.g.vh || gi.h, fake.startX);
+        else {
+          const vh = gi.g.vh || gi.h;
+          this.drawFilmstrip(ctx, gi.g.item, fake, x, x + w, y, vh, fake.startX);
+          const ah = gi.h - vh;
+          if (ah > 2 && gi.g.hasAudio) this.drawAudio(ctx, fake, x, x + w, y + vh, ah, fake.startX, false);
+        }
         ctx.restore();
         this.drawSelection(ctx, x, y, w, gi.h);
       }
@@ -1134,16 +1137,29 @@
         this.redraw();
       }, (ev, moved) => {
         this.stopAutoScroll();
-        if (!moved) { this.drag = null; this.redraw(); return; }
+        if (!moved) { this.drag = null; this.endReserve(); this.redraw(); return; }
         this.commitMove(d);
         this.drag = null;
+        this.endReserve();
         this.snapX = null;
         this.redraw();
       }, { threshold: 4 });
     },
+    redoMove() {
+      const d = this.drag;
+      if (!d || d.kind !== 'move' || !d.cur) return;
+      this.updateMoveTarget(d, d.cur);
+      this.redraw();
+    },
     /** Compute drop target for moving timeline items. */
     updateMoveTarget(d, q) {
-      const G = this.G;
+      this._wantTouched = false;
+      this._updateMoveTarget(d, q);
+      if (!this._wantTouched) this.noLaneAbove();
+    },
+    _updateMoveTarget(d, q) {
+      if (this.maybeCloseReserve(q.y)) this.dxTarget.clear();
+      let G = this.G;
       const p = this.p;
       const L = Pr.layout(p);
       d.insertX = null; d.connectLine = null; d.lane = null; d.musicIndex = null;
@@ -1157,6 +1173,9 @@
           // becomes a cutaway (connected) clip
           d.mode = 'toConnected';
           d.lane = Math.max(1, this.laneAt(q.y) || 1);
+          if (d.lane > G.maxAbove) {
+            if (this.wantLaneAbove(ghost0.h, () => this.redoMove())) { G = this.G; d.lane = Math.max(1, this.laneAt(q.y) || 1); }
+          } else this.noLaneAbove();
           const t = clamp(this.xt(ghost0.x + d.dxPx), 0, L.duration);
           d.dropT = this.snapTime(t, 7);
           const box = this.previewLaneBox(G, d.lane, ghost0.h);
@@ -1167,6 +1186,7 @@
           return;
         }
         d.mode = 'reorder';
+        d.ghostDy = G.primY - ghost0.y;  // the storyline may have moved down for a reserved lane
         const idx = this.insertIndexAt(q.x - (d.grabX - ghost0.x) + (ghost0.w / 2), d.ids);
         d.insertIndex = idx;
         const gapW = d.ghosts.reduce((s, gi) => s + gi.w + GAP * 2, 0);
@@ -1199,6 +1219,9 @@
         let lane = this.laneAt(q.y);
         if (it.type === 'audio') lane = lane == null || lane > 0 ? -1 : lane;
         else lane = lane == null || lane < 0 ? 1 : lane;
+        if (lane > G.maxAbove && it.type !== 'audio') {
+          if (this.wantLaneAbove(ghost0.h, () => this.redoMove())) { G = this.G; lane = Math.max(1, this.laneAt(q.y) || 1); }
+        } else this.noLaneAbove();
         d.lane = lane;
         d.ghostDy = this.previewLaneBox(G, lane, ghost0.h).y - ghost0.y;
         return;
@@ -1216,13 +1239,45 @@
         d.lane = -1;
       }
     },
+    /**
+     * A drag wants a new lane above the top lane. After a short dwell (so merely passing through on the
+     * way down doesn't move anything) an empty lane of the clip's height opens there, pushing the
+     * storyline down, and the preview shows at full size. `redo` re-evaluates the drag if the pointer rests.
+     */
+    wantLaneAbove(hh, redo) {
+      this._wantTouched = true;
+      if (this.reserveAbove || hh <= TITLE_H + 2) return false;
+      const now = performance.now();
+      if (!this._want || this._want.hh !== hh) this._want = { since: now, hh };
+      if (now - this._want.since >= 280) {
+        this._want = null;
+        clearTimeout(this._wantTimer);
+        this.reserveAbove = hh + 6;
+        this.G = this.geom();
+        return true;
+      }
+      clearTimeout(this._wantTimer);
+      this._wantTimer = setTimeout(() => { if (redo) redo(); }, 300);
+      return false;
+    },
+    noLaneAbove() { this._want = null; clearTimeout(this._wantTimer); },
+    /** Close an opened lane once the pointer moves below it (hysteresis: the storyline returns under the pointer). */
+    maybeCloseReserve(y) {
+      const G = this.G;
+      if (!this.reserveAbove || !G || !G.reserved) return false;
+      if (y <= G.laneY.get(G.reserved) + G.laneH.get(G.reserved) + 2) return false;
+      this.reserveAbove = 0;
+      this.G = this.geom();
+      return true;
+    },
+    endReserve() { this.noLaneAbove(); if (this.reserveAbove) { this.reserveAbove = 0; this.G = null; } },
     laneAt(y) {
       const G = this.G;
       if (y >= G.primY && y <= G.primY + G.primH) return 0;
       if (y < G.primY) {
         // nearest lane at or below the pointer; above the top lane means a new lane
         for (let lane = 1; lane <= G.maxAbove; lane++) if (y >= G.laneY.get(lane)) return lane;
-        return G.maxAbove + 1;
+        return G.reserved ? G.maxAbove : G.maxAbove + 1;
       }
       for (let lane = -1; lane >= -G.maxBelow; lane--) if (y < G.laneY.get(lane) + G.laneH.get(lane)) return lane;
       return -(G.maxBelow + 1);
@@ -1391,11 +1446,18 @@
       const x = this.tx(t);
       if (x < this.scroller.scrollLeft + 20 || x > this.scroller.scrollLeft + this.W - 40) this.scroller.scrollLeft = Math.max(0, x - this.W / 3);
     },
+    /** Scroll just enough to show newly added items (their start, if they're longer than the view). */
     revealItems(ids) {
       if (!ids || !ids.length || !this.p) return;
       const e = Pr.layout(this.p).byId.get(ids[ids.length - 1]);
-      if (e) this.scrollToTime(e.end);
       this.updateEmpty();
+      if (!e) return;
+      this._draw();  // make sure the content width includes the new items
+      const sl = this.scroller.scrollLeft, W = this.W;
+      const x0 = this.tx(e.start), x1 = this.tx(e.end);
+      if (x0 >= sl + 20 && (x1 <= sl + W - 40 || x1 - x0 > W - 80)) return;
+      if (x1 - x0 <= W - 80 && x1 > sl + W - 40) this.scroller.scrollLeft = Math.max(0, x1 - W + 60);
+      else if (x0 < sl + 20 || x0 > sl + W - 40) this.scroller.scrollLeft = Math.max(0, x0 - 40);
     },
 
     // ------------------------------------------------------------------ zoom
@@ -1534,7 +1596,11 @@
       const r = this.canvas.getBoundingClientRect();
       if (clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom) { this.dragLeave(); return false; }
       const pt = this.toContent({ clientX, clientY });
-      const G = this.G || this.geom();
+      this._extLast = { payload, x: clientX, y: clientY };
+      this._wantTouched = false;
+      if (!this.G) this.G = this.geom();
+      this.maybeCloseReserve(pt.y);
+      const G = this.G;
       const L = Pr.layout(this.p);
       const t = clamp(this.xt(pt.x), 0, 1e9);
       const x = { time: t, dur: payload.dur || 4, target: null, lane: null };
@@ -1561,7 +1627,7 @@
           x.target = 'titleAbove'; x.time = clamp(this.snapTime(t, 8), 0, L.duration - 0.05); x.lane = Math.max(1, this.laneAt(pt.y) || 1);
         } else if (t >= L.duration) { x.target = 'insert'; x.index = this.p.clips.length; x.insertX = this.tx(L.duration); }
       } else if (payload.kind === 'bg') {
-        if (pt.y < primTop - 8) { x.target = 'connect'; x.lane = Math.max(1, this.laneAt(pt.y) || 1); x.time = clamp(this.snapTime(t, 8), 0, L.duration - 0.05); }
+        if (pt.y < primTop - 8) { x.target = 'connect'; x.lane = this.extLaneAbove(pt.y); x.time = clamp(this.snapTime(t, 8), 0, L.duration - 0.05); }
         else { x.target = 'insert'; x.index = this.insertIndexAt(pt.x, []); x.insertX = this.insertXFor(x.index, []); }
       } else if (payload.kind === 'media') {
         const audioOnly = payload.audioOnly;
@@ -1572,7 +1638,7 @@
             x.lane = this.freeLane(x.time, x.dur, x.lane);
           } else { x.target = 'audio'; x.lane = -1; x.time = clamp(this.snapTime(t, 8), 0, L.duration - 0.05); x.lane = this.freeLane(x.time, x.dur, -1); }
         } else if (pt.y < primTop - 6) {
-          x.target = 'connect'; x.lane = Math.max(1, this.laneAt(pt.y) || 1);
+          x.target = 'connect'; x.lane = this.extLaneAbove(pt.y);
           x.time = clamp(this.snapTime(t, 8), 0, Math.max(0, L.duration - 0.05));
         } else if (t >= L.duration - 0.01) {
           x.target = 'insert'; x.index = this.p.clips.length; x.insertX = this.tx(L.duration);
@@ -1583,6 +1649,7 @@
           else { x.target = 'insert'; x.index = this.insertIndexAt(pt.x, []); x.insertX = this.insertXFor(x.index, []); }
         }
       }
+      if (!this._wantTouched) this.noLaneAbove();
       // gap animation for inserts
       this.dxTarget.clear();
       if (x.target === 'insert' && x.index != null && x.index < this.p.clips.length) this.gapTargets([], x.index, (payload.dur || 4) * this.pps);
@@ -1595,6 +1662,15 @@
       this.redraw();
       return !!x.target;
     },
+    /** Lane above the storyline for an external clip drop; opens a full-height lane when it's a new one. */
+    extLaneAbove(y) {
+      let lane = Math.max(1, this.laneAt(y) || 1);
+      if (lane > this.G.maxAbove) {
+        const last = this._extLast;
+        if (this.wantLaneAbove(Math.round(this.G.S.vh * 0.75), () => { if (this.ext && last) this.dragOver(last.payload, last.x, last.y); })) lane = Math.max(1, this.laneAt(y) || 1);
+      } else this.noLaneAbove();
+      return lane;
+    },
     freeLane(t, dur, lane) {
       const L = Pr.layout(this.p);
       const sign = lane < 0 ? -1 : 1;
@@ -1606,6 +1682,7 @@
       }
     },
     dragLeave() {
+      this.endReserve();
       if (!this.ext) return;
       this.ext = null;
       for (const k of this.dx.keys()) this.dxTarget.set(k, 0);
@@ -1619,6 +1696,7 @@
       this.stopAutoScroll();
       if (!ok || !x) { this.dragLeave(); return false; }
       this.ext = null;
+      this.endReserve();
       const before = this.captureDisplay();
       this.dxTarget.clear(); this.dx.clear();
       const p = this.p;

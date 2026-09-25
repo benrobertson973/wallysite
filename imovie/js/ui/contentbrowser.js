@@ -259,15 +259,14 @@
           app.focus = 'browser';
           drawWave(row);
           if (e.target.closest('.au-play')) return;
-          IM.drag(e, async () => {
-            if (this.dragging) return;
+          // the drag starts right away; built-in sounds finish generating in the background
+          const m0 = this.mediaNow(row);
+          IM.drag(e, () => {
+            if (this.dragging || !m0) return;
             this.dragging = true;
-            const m = await this.mediaFor(row);
             const ghost = IM.ghostFor(null, 140, 26, row.name);
-            if (m) {
-              IM.setBrowserSelection([{ mediaId: m.id, a: 0, b: m.duration }]);
-              IM.DnD.start(e, { kind: 'media', items: [{ mediaId: m.id, a: 0, b: m.duration }], dur: m.duration, audioOnly: true }, ghost, 1);
-            }
+            IM.setBrowserSelection([{ mediaId: m0.id, a: 0, b: m0.duration }]);
+            IM.DnD.start(e, { kind: 'media', items: [{ mediaId: m0.id, a: 0, b: m0.duration }], dur: m0.duration, audioOnly: true }, ghost, 1);
           }, () => { this.dragging = false; }, { threshold: 4 });
           this.mediaFor(row).then((m) => { if (m && selected === row) IM.setBrowserSelection([{ mediaId: m.id, a: 0, b: m.duration }]); });
         });
@@ -288,6 +287,8 @@
       });
       requestAnimationFrame(() => drawWave(null));
     },
+    /** Media record for a row without waiting for built-in audio to be generated. */
+    mediaNow(row) { return row.builtin ? IM.builtinMedia(row.id) : IM.lib.get(row.id); },
     async mediaFor(row) {
       if (!row.builtin) return IM.lib.get(row.id);
       const m = IM.builtinMedia(row.id);
