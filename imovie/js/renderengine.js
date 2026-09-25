@@ -318,7 +318,7 @@
   // ------------------------------------------------------------------ formats & encoders
   const QUALITY_BPP = { low: 0.045, medium: 0.08, high: 0.14, best: 0.26 };
   const RES = { 540: [960, 540], 720: [1280, 720], 1080: [1920, 1080], 2160: [3840, 2160] };
-  async function pickVideoCodec(W, H, fps, bitrate, prefer) {
+  async function pickVideoCodec(W, H, fps, bitrate, prefer, software) {
     if (typeof VideoEncoder === 'undefined') return null;
     const cands = [];
     const level = W * H > 1920 * 1088 ? '33' : W * H > 1280 * 720 ? '28' : '1f';
@@ -333,6 +333,7 @@
     cands.push({ codec: 'vp8', str: 'vp8', container: 'webm' });
     for (const c of cands) {
       const cfg = encoderConfig(c, W, H, fps, bitrate);
+      if (software) cfg.hardwareAcceleration = 'prefer-software';
       try {
         const s = await VideoEncoder.isConfigSupported(cfg);
         if (s && s.supported) return Object.assign({}, c, { config: s.config || cfg });
@@ -364,9 +365,9 @@
     const [W, H] = RES[o.resolution || 1080] || RES[1080];
     const bpp = QUALITY_BPP[o.quality || 'high'] || QUALITY_BPP.high;
     const bitrate = o.bitrate || Math.max(500000, W * H * fps * bpp);
-    const vc = await pickVideoCodec(W, H, fps, bitrate, o.container);
+    const vc = await pickVideoCodec(W, H, fps, bitrate, o.container, o.software);
     if (!vc) return null;
-    const key = [vc.config.codec, W + 'x' + H, fps, Math.round(bitrate / 1000)].join(':');
+    const key = [vc.config.codec, W + 'x' + H, fps, Math.round(bitrate / 1000)].concat(o.software ? ['sw'] : []).join(':');
     return { W, H, fps, bitrate, codec: vc.codec, codecStr: vc.config.codec, container: vc.container, encoderConfig: vc.config, key, resolution: o.resolution || 1080, quality: o.quality || 'high' };
   }
 
@@ -386,16 +387,16 @@
         },
         error: (e) => { this.error = e; },
       });
-      this.enc.configure(fmt.encoderConfig);
+      try { this.enc.configure(fmt.encoderConfig); } catch (e) { this.error = e; }
     }
     async encode(frame, key) {
-      if (this.error) throw new RenderError('The video encoder failed: ' + this.error.message);
+      if (this.error) throw new RenderError('The video encoder failed: ' + this.error.message, { encoder: true });
       this.enc.encode(frame, { keyFrame: !!key });
       while (this.enc.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 0));
     }
     async flush() {
-      await this.enc.flush();
-      if (this.error) throw new RenderError('The video encoder failed: ' + this.error.message);
+      try { await this.enc.flush(); } catch (e) { this.error = this.error || e; }
+      if (this.error) throw new RenderError('The video encoder failed: ' + this.error.message, { encoder: true });
       const out = this.packets;
       this.packets = [];
       return out;
@@ -1260,6 +1261,12 @@
         // cancelled or failed: leave no half-written movie behind (a picked file keeps its previous contents)
         if (output && output.state !== 'finalized') { try { await output.cancel(); } catch (err) { /* */ } }
         if (writable) { try { await writable.abort(); } catch (err) { /* already closed */ } }
+        // a hardware encoder that gives up (some GPUs and drivers do) gets one more try in software
+        if (e instanceof RenderError && e.detail && e.detail.encoder && !o.software && !state.cancelled) {
+          console.warn('The video encoder failed; sharing again with the software encoder', e);
+          this.running = null;
+          return this.export(p, Object.assign({}, o, { software: true }));
+        }
         throw e;
       } finally {
         this.running = null;
