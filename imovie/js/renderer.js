@@ -49,7 +49,12 @@
           tp = clamp(Math.min(local / f, (e.dur - local) / f), 0, 1);
         }
         if (ov.mode === 'cutaway') op *= tp;
-        spec.overlays.push({ mode: ov.mode, layer, opacity: op, progress: tp, ov, id: it.id, local, dur: e.dur });
+        let keyRGB = null;
+        if (ov.mode === 'greenscreen' && IM.keyer) {
+          keyRGB = IM.keyer.color(it, opts.noStabRequest);
+          if (!keyRGB && opts.strict) layer.kind = 'pending';
+        }
+        spec.overlays.push({ mode: ov.mode, layer, opacity: op, progress: tp, ov, id: it.id, local, dur: e.dur, keyRGB });
       }
       return spec;
     },
@@ -98,7 +103,6 @@
       this.W = 0; this.H = 0;
       this.fb = null;
       this.tex = new Map();
-      this.keyColors = new Map();
       this.titleCanvas = document.createElement('canvas');
       this.titleCtx = this.titleCanvas.getContext('2d');
       this.titleTex = this.g.texture();
@@ -190,7 +194,7 @@
           g.draw(this.simple('SPLIT'), fb.acc2, { u_side: sideIdx, u_slide: slide, u_opacity: ov.opacity }, { u_base: fb.acc, u_ov: fb.o });
           this._swapAcc();
         } else if (ov.mode === 'greenscreen') {
-          const key = this.keyColor(ov.id, ov.ov.key);
+          const key = ov.keyRGB || this.keyColor(ov.id, ov.ov.key);
           const k = ov.ov.key;
           const crop = k.crop || [0, 0, 1, 1];
           g.draw(this.simple('CHROMA'), fb.acc, {
@@ -270,8 +274,7 @@
     /** Determine chroma key colour for a green/blue screen overlay (auto-detected from the frame border). */
     keyColor(id, key) {
       if (key && key.color) return IM.hexToRgb(key.color);
-      const cached = this.keyColors.get(id);
-      if (cached && performance.now() - cached.at < 4000) return cached.rgb;
+      // transient preview fallback while the clip's key colour is being detected (see IM.keyer)
       const g = this.g.gl;
       const w = 32, h = 18;
       if (!this._small) this._small = this.g.fbo(w, h);
@@ -292,7 +295,6 @@
       if (gs[3] >= bs[3] && gs[3] > 0) rgb = [gs[0] / gs[3] / 255, gs[1] / gs[3] / 255, gs[2] / gs[3] / 255];
       else if (bs[3] > 0) rgb = [bs[0] / bs[3] / 255, bs[1] / bs[3] / 255, bs[2] / bs[3] / 255];
       else rgb = [0.1, 0.8, 0.2];
-      this.keyColors.set(id, { rgb, at: performance.now() });
       return rgb;
     }
     /** Read back current output to a 2D canvas (for thumbnails/snapshots). */

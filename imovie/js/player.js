@@ -127,6 +127,7 @@
       };
       this._loop = this._loop.bind(this);
       IM.bus.on('stab-ready', () => this.invalidate());
+      IM.bus.on('key-ready', () => this.invalidate());
     }
     setRenderer(r) { this.renderer = r; this.invalidate(); }
     setProject(p) {

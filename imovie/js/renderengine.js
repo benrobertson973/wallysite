@@ -176,6 +176,7 @@
       v: it.video, ov: it.overlay || null, ti: it.title || null, bgc: it.bg || null,
     };
     if (IM.stabilizer && IM.stabilizer.needs(it.video)) o.stv = IM.stabilizer.VERSION;
+    if (it.overlay && it.overlay.mode === 'greenscreen') o.kv = KEY_VERSION;
     if (m) o.mf = [m.size, m.duration, m.width, m.height, m.fps, m.created];
     return o;
   }
@@ -411,6 +412,11 @@
         if (e.item.type !== 'video' && e.item.type !== 'freeze') continue;
         await this.server(IM.lib.get(e.item.mediaId)).open();
       }
+      // green/blue screen key colours
+      for (const e of visualEntries(L)) {
+        const it = e.item;
+        if (it.overlay && it.overlay.mode === 'greenscreen' && e.where === 'connected') await Keyer.ensure(it);
+      }
       // stabilization analysis (stored per media; computed now if missing)
       for (const e of visualEntries(L)) {
         const it = e.item;
@@ -508,6 +514,74 @@
     if (fail) throw new RenderError(`A frame couldn’t be prepared at ${IM.fmtTime(f / fps, true)}.`, { frame: f });
   }
   IM.RenderEngine = Engine;
+
+  // ------------------------------------------------------------------ green/blue screen key colour
+  // Detected once per clip from decoded source frames (independent of output size and of timing), so the
+  // viewer and every export key with exactly the same colour.
+  const KEY_VERSION = 1;
+  const keyColors = new Map();  // clip range key -> [r, g, b]
+  const keyJobs = new Map();
+  const keyRange = (it) => (it.type === 'freeze' ? [it.frameTime, it.frameTime] : [it.srcIn || 0, Math.max(it.srcIn || 0, it.srcOut || 0)]);
+  const keyId = (it) => it.mediaId + '|' + keyRange(it).join('|');
+  async function detectKeyColor(it) {
+    const m = IM.lib.get(it.mediaId);
+    if (!m) throw new RenderError('A clip in this project refers to media that is no longer in the library.');
+    const W = 64, H = 36;
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    const gs = [0, 0, 0, 0], bs = [0, 0, 0, 0];
+    const tally = () => {
+      const d = ctx.getImageData(0, 0, W, H).data;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        if (g > r * 1.15 && g > b * 1.15) { gs[0] += r; gs[1] += g; gs[2] += b; gs[3]++; }
+        else if (b > r * 1.15 && b > g * 1.05) { bs[0] += r; bs[1] += g; bs[2] += b; bs[3]++; }
+      }
+    };
+    if (m.kind === 'image') {
+      if (!m.image) await IM.lib._loadImage(m);
+      if (!m.image) throw new RenderError(`The photo “${m.name}” can’t be loaded.`);
+      ctx.drawImage(m.image, 0, 0, W, H);
+      tally();
+    } else {
+      const srv = Engine.server(m);
+      await srv.open();
+      const [a, b] = keyRange(it);
+      for (let i = 0; i < 5; i++) {
+        const f = await srv.frameAt(clamp(a + ((b - a) * (i + 0.5)) / 5 + 0.0015, 0, Math.max(0, (m.duration || 0) - 1e-3)));
+        try { ctx.clearRect(0, 0, W, H); ctx.drawImage(f.frame || f.canvas, 0, 0, W, H); } finally { if (f.frame) f.frame.close(); }
+        tally();
+      }
+    }
+    if (gs[3] >= bs[3] && gs[3] > 0) return [gs[0] / gs[3] / 255, gs[1] / gs[3] / 255, gs[2] / gs[3] / 255];
+    if (bs[3] > 0) return [bs[0] / bs[3] / 255, bs[1] / bs[3] / 255, bs[2] / bs[3] / 255];
+    return [0.1, 0.8, 0.2];
+  }
+  const Keyer = {
+    VERSION: KEY_VERSION,
+    /** Key colour for a green/blue screen clip, or null while it's being detected. */
+    color(it, noRequest) {
+      const k = it.overlay && it.overlay.key;
+      if (k && k.color) return IM.hexToRgb(k.color);
+      const id = keyId(it);
+      if (keyColors.has(id)) return keyColors.get(id);
+      if (!noRequest) this.ensure(it).then(() => IM.bus.emit('key-ready'), (e) => console.warn('Key colour detection failed', e));
+      return null;
+    },
+    ensure(it) {
+      const k = it.overlay && it.overlay.key;
+      if (k && k.color) return Promise.resolve();
+      const id = keyId(it);
+      if (keyColors.has(id)) return Promise.resolve();
+      if (!keyJobs.has(id)) {
+        const job = detectKeyColor(it).then((rgb) => { keyColors.set(id, rgb); });
+        keyJobs.set(id, job);
+        job.then(() => keyJobs.delete(id), () => keyJobs.delete(id));
+      }
+      return keyJobs.get(id);
+    },
+  };
+  IM.keyer = Keyer;
 
   // ------------------------------------------------------------------ audio: range decode, time-stretch, per-item buffers
   const audioCache = new Map(); // key -> AudioBuffer (timeline-time, before gain/effects)
