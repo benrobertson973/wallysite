@@ -510,6 +510,8 @@
               provider.set(rd.e.item.id, await rd.reader.next());
             }
           }
+          // (the movie may have changed while this frame's sources were decoding)
+          if (opts.shouldAbort && opts.shouldAbort()) throw new AbortRender();
           const spec = IM.Compose.frame(p, f / fps, provider, { strict: true });
           assertComplete(spec, f, fps);
           r.render(spec);
@@ -1143,6 +1145,12 @@
   IM.mixConsts = { AUDIO_SR, MIX_WINDOW, MIX_PREROLL, MIX_LEAD, closeStreams };
 
   // ------------------------------------------------------------------ export
+  /** A frozen copy of the project as it is now: a share renders exactly this, whatever is edited meanwhile. */
+  function snapshotProject(p) {
+    const copy = Object.assign({}, p);
+    delete copy._layout;
+    return JSON.parse(JSON.stringify(copy));
+  }
   const Exporter = {
     running: null,
     /**
@@ -1152,6 +1160,7 @@
     async export(p, o) {
       o = o || {};
       if (this.running) throw new RenderError('Another share is already in progress.');
+      p = snapshotProject(p);
       const mb = await IM.loadMediabunny();
       if (!mb) throw new RenderError('The media engine failed to load.');
       const state = { cancelled: false };
@@ -1454,6 +1463,8 @@
               // stop at the next frame when the user is back, the movie changed, or a foreground render waits
               shouldAbort: () => !this.idle() || IM.app.project !== p || p.version !== version || RenderLock.fgWaiting > 0,
             });
+            // an edit made while the section's last frame was rendering must not end up in the cache
+            if (IM.app.project !== p || p.version !== version) continue;
             await Cache.put(todo.key, data);
           } finally { session.close(); }
         } catch (e) {

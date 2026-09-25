@@ -141,7 +141,8 @@
     textureFor(src) {
       let rec = this.tex.get(src.key);
       if (!rec) {
-        rec = { t: this.g.texture(), stamp: null, used: 0 };
+        // (marked as just used before collecting, so the collector never deletes the texture being created)
+        rec = { t: this.g.texture(), stamp: null, used: performance.now() };
         this.tex.set(src.key, rec);
         if (this.tex.size > 40) this._gcTextures();
       }

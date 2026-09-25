@@ -93,12 +93,16 @@
       const input = h('input.text-field', { type: 'text', value: ev.name });
       nameEl.replaceWith(input);
       input.focus(); input.select();
+      let finished = false;
       const done = (ok) => {
+        if (finished) return;
+        finished = true;
         if (ok && input.value.trim()) IM.lib.renameEvent(evId, input.value.trim());
         else this.render();
       };
       input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); });
-      input.addEventListener('blur', () => done(true));
+      // (deferred: the field also loses focus while the sidebar is being rebuilt)
+      input.addEventListener('blur', () => setTimeout(() => done(true), 0));
       input.addEventListener('pointerdown', (e) => e.stopPropagation());
     },
     async deleteEvent(ev) {
