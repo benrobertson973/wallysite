@@ -1387,8 +1387,11 @@
             exp.set(ff, sctx.getImageData(0, 0, 96, 54).data);
           });
           const psnr = psnrOf(a, exp.get(f));
+          // Off by one: a neighbour matches clearly better. Only telling when the neighbour itself looks different
+          // (in a slow pan adjacent frames differ by less than the encoder's own noise, and a lean encoder may
+          // barely update the motion from one frame to the next).
           let offByOne = false;
-          for (const [ff, d] of exp) if (ff !== f && psnr < 40 && psnrOf(a, d) > psnr + 1.5) offByOne = true;
+          for (const [ff, d] of exp) if (ff !== f && psnr < 40 && psnrOf(exp.get(f), d) < 35 && psnrOf(a, d) > psnr + 1.5) offByOne = true;
           res.checks.push({ frame: f, psnr: Math.round(psnr * 10) / 10, offByOne });
           if (psnr < 24 || offByOne) {
             res.ok = false;
