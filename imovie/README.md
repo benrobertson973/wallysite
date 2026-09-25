@@ -47,7 +47,15 @@ without H.264 encoding export VP9/WebM automatically.
   preview and export.
 - **Pre-rendering**: while you're idle, the movie is split into content-hashed, shift-invariant
   sections that are rendered and encoded in the background. Exports reuse those sections
-  without re-encoding, so unchanged parts of a movie export almost instantly.
+  without re-encoding, so unchanged parts of a movie export almost instantly. Every section is
+  encoded by a fresh encoder, so an export that reuses sections is bit-identical to one rendered
+  from scratch. Background rendering never overlaps other renders and pauses the moment you
+  start working or sharing.
+- **Stabilization and rolling shutter**: clips are analyzed once (motion between frames,
+  estimated from decoded frames and stored with the library); corrections are looked up by the
+  timestamp of the frame being drawn, so the viewer and the export stabilize identically.
+- Green/blue screen key colors are detected from the clip's own frames, and titles use
+  fractional font sizes, so nothing depends on timing or output resolution.
 - **Verification**: after every export the file is decoded again, frame count and duration are
   checked, and sampled frames (plus their neighbors, to catch off-by-one timing) are compared
   against fresh renders. Failing sections are re-rendered automatically.
