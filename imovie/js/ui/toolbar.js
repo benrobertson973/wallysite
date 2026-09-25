@@ -28,7 +28,10 @@
       IM.bus.on('view', () => this.render());
       IM.bus.on('tab', () => this.updateTabs());
       IM.bus.on('project-changed', () => this.updateTitle());
-      IM.bus.on('export-progress', (p) => this.setProgress(p));
+      IM.bus.on('export-progress', (p) => { this.setProgress(p); this.layoutTitle(); });
+      if (window.ResizeObserver) new ResizeObserver(() => this.layoutTitle()).observe(this.el);
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => this.layoutTitle());
+      else window.addEventListener('resize', () => this.layoutTitle());
       this.render();
     },
     render() {
@@ -46,7 +49,7 @@
       } else {
         const back = h('button.tb-btn.bordered.tb-back', { on: { click: () => IM.closeProject() } }, IM.icon('chevron-left', 15), 'Projects');
         const imp = h('button.tb-btn.bordered', { 'data-tip': 'Import Media', on: { click: () => IM.run('import') } }, IM.icon('import', 17));
-        const tabs = h('div.tb-tabs');
+        const tabs = this.tabsEl = h('div.tb-tabs');
         this.tabBtns = TABS.map(([id, label]) => {
           const b = h('button.tb-tab', { on: { click: () => IM.run('tab:' + id) } }, label);
           b._id = id;
@@ -66,12 +69,29 @@
         this.updateTitle();
       }
     },
+    /** Centre the project name in the window when it fits; otherwise keep it between the tabs and Share, shortened. */
+    layoutTitle() {
+      const t = this.titleEl;
+      if (!t || !t.isConnected || !this.tabsEl) return;
+      const bar = this.el.getBoundingClientRect();
+      const left = this.tabsEl.getBoundingClientRect().right - bar.left + 14;
+      const rightEls = [this.progressWrap, this.shareBtn].filter(Boolean).map((e) => e.getBoundingClientRect().left - bar.left);
+      const right = (rightEls.length ? Math.min(...rightEls) : bar.width) - 14;
+      t.style.transform = 'none'; t.style.left = '0px'; t.style.width = 'auto'; t.style.maxWidth = 'none';
+      const natural = Math.ceil(t.scrollWidth) + 1;
+      const w = Math.max(0, Math.min(natural, right - left));
+      const x = Math.max(left, Math.min(bar.width / 2 - w / 2, right - w));
+      t.style.left = Math.round(x) + 'px';
+      t.style.width = Math.round(w) + 'px';
+      t.style.visibility = w < 24 ? 'hidden' : '';
+    },
     updateTabs() {
       if (!this.tabBtns) return;
       this.tabBtns.forEach((b) => b.classList.toggle('active', b._id === app.tab));
     },
     updateTitle() {
       if (this.titleEl && app.project) this.titleEl.textContent = app.project.name;
+      this.layoutTitle();
     },
     async renameProject() {
       const p = app.project;

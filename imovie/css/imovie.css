@@ -165,9 +165,10 @@ body.native-fullscreen #window { top: 0; border-radius: 0; }
 .tb-tab:hover { color: #e6e6e6; }
 .tb-tab.active { color: #ffffff; background: rgba(255, 255, 255, 0.13); }
 .tb-title {
-  position: absolute; left: 50%; transform: translateX(-50%); top: 0; height: 100%;
-  display: flex; align-items: center; font-weight: 600; color: #d6d6d6; font-size: 13px;
-  pointer-events: none; white-space: nowrap; max-width: 30%; overflow: hidden; text-overflow: ellipsis;
+  /* placed by the toolbar: centred when it fits, otherwise just right of the tabs, shortened with an ellipsis */
+  position: absolute; left: 50%; transform: translateX(-50%); top: 0; height: 100%; line-height: var(--toolbar-h);
+  display: block; font-weight: 600; color: #d6d6d6; font-size: 13px; text-align: center;
+  pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tb-spacer { flex: 1; }
 .tb-seg {

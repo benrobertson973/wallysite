@@ -128,9 +128,10 @@
         const dur = Pr.dur(it);
         const draw = (c, f) => {
           const local = f == null ? IM.titleRestTime(it.title, dur) : f * dur;
-          const base = sampleLayer(S.A, 'A');
-          base.video = Object.assign(Pr.defaultVideo(), { color: Object.assign(Pr.defaultVideo().color, { bright: -0.25 }) });
-          renderThumb({ base, overlays: [], titles: [{ title: it.title, local, dur, opacity: 1 }], time: local }, c);
+          // a plain dark card, so what shows is the lettering itself
+          const base = { kind: 'bg', bgKind: 'solid', c1: [0.16, 0.16, 0.17], c2: [0.16, 0.16, 0.17], video: Pr.defaultVideo(), filter: 'none', time: 0, opacity: 1, primary: true };
+          // lettering drawn larger than in a movie so it reads at thumbnail size
+          renderThumb({ base, overlays: [], titles: [{ title: Object.assign({}, it.title, { size: 2 }), local, dur, opacity: 1 }], time: local }, c);
         };
         return this.cell(st.name, draw, {
           payload: () => ({ kind: 'title', style: st.id, dur }),
