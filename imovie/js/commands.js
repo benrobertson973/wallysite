@@ -27,7 +27,11 @@
   def('hide', { run: () => { IM.$('#window').classList.add('minimized'); setTimeout(() => IM.$('#window').classList.remove('minimized'), 1400); } });
   def('quit', { run: () => IM.alert({ title: 'Quit iMovie?', message: 'Your library is saved automatically in this browser. Close the tab to quit.', buttons: [{ label: 'OK', primary: true }] }) });
   def('newMovie', { run: () => IM.newMovie() });
-  def('newTrailer', { run: () => IM.trailers ? IM.trailers.chooser() : IM.newMovie() });
+  def('newTrailer', { run: () => IM.trailers.chooser() });
+  def('convertTrailer', {
+    enabled: () => !!(app.project && app.project.kind === 'trailer' && app.view === 'editor'),
+    run: () => { IM.edit('Convert Trailer to Movie', (p) => { IM.trailers.toMovie(p); }); IM.bus.emit('project-opened', app.project); },
+  });
   def('newEvent', {
     enabled: () => app.view !== 'projects',
     run: () => {

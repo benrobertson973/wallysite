@@ -22,6 +22,7 @@
     IM.contentUI.init(browserHost);
     IM.viewerUI.init(upper);
     IM.timelineUI.init(lower);
+    IM.trailerUI.init(lower);
 
     // ---- splitters ----
     const applySizes = () => {

@@ -24,7 +24,7 @@
         I('New Movie', 'newMovie', 'cmd+n'), I('New Trailer', 'newTrailer'),
         { label: 'Open Library', submenu: [{ label: 'iMovie Library', checked: true }, SEP, DIS('New…'), DIS('Other…')] },
         I('New Event', 'newEvent'), SEP,
-        I('Import Media…', 'import', 'cmd+i'), SEP,
+        I('Import Media…', 'import', 'cmd+i'), I('Convert Trailer to Movie', 'convertTrailer'), SEP,
         { label: 'Share', submenu: [I('Email…', 'share:email'), I('YouTube & Facebook…', 'share:youtube'), I('Image…', 'share:image'), I('File…', 'share:file', 'cmd+e')] },
         SEP,
         I('Move to Trash', 'moveToTrash', 'cmd+delete'), SEP,

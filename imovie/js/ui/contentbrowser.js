@@ -123,7 +123,7 @@
     // ------------------------------------------------------------------ titles
     renderTitles() {
       const S = makeSamples();
-      const cells = IM.TitleStyles.list.map((st) => {
+      const cells = IM.TitleStyles.visible().map((st) => {
         const it = Pr.makeTitle(st.id);
         const dur = Pr.dur(it);
         const draw = (c, f) => {

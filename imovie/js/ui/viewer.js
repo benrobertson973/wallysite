@@ -152,6 +152,8 @@
     buildBar() {
       const bar = IM.clear(this.bar);
       const cur = this.current();
+      // trailer cards are styled by the template
+      if (cur && cur.item.type === 'title' && app.project && app.project.kind === 'trailer') return;
       if (cur && cur.item.type === 'title' && app.view === 'editor') { this.buildTitleBar(cur.item); return; }
       const wand = h('button.adj-btn', { 'data-tip': 'Enhance', on: { click: () => IM.run('enhance') } }, IM.icon('wand', 17));
       if (!IM.can('enhance')) wand.disabled = true;
@@ -348,6 +350,7 @@
     onStageDbl() { if (app.view === 'editor') IM.run('play'); },
     titleAtPoint(e) {
       const p = app.project;
+      if (!p || p.kind === 'trailer') return null;
       const r = this.canvas.getBoundingClientRect();
       const x = (e.clientX - r.left) / r.width * this.renderer.W, y = (e.clientY - r.top) / r.height * this.renderer.H;
       const t = app.player.t;

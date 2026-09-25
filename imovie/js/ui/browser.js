@@ -19,7 +19,8 @@
       document.body.style.cursor = 'copy';
       const move = (ev) => {
         place(ev.clientX, ev.clientY);
-        st.overTimeline = IM.timelineUI && app.view === 'editor' ? IM.timelineUI.dragOver(payload, ev.clientX, ev.clientY) : false;
+        const tgt = IM.trailerUI && IM.trailerUI.active() ? IM.trailerUI : IM.timelineUI;
+        st.overTimeline = tgt && app.view === 'editor' ? tgt.dragOver(payload, ev.clientX, ev.clientY) : false;
         if (st.overEvent) st.overEvent.classList.remove('drop');
         st.overEvent = null;
         if (!st.overTimeline && payload.kind === 'media' && IM.sidebarUI) {
@@ -35,15 +36,16 @@
         ghost.remove();
         document.body.style.cursor = '';
         this.active = null;
-        if (st.cancelled) { IM.timelineUI && IM.timelineUI.dragLeave(); return; }
+        const tgt = IM.trailerUI && IM.trailerUI.active() ? IM.trailerUI : IM.timelineUI;
+        if (st.cancelled) { tgt && tgt.dragLeave(); return; }
         if (st.overEvent) {
           st.overEvent.classList.remove('drop');
           IM.lib.moveMedia(payload.items.map((s) => s.mediaId), st.overEvent.dataset.eventId);
           return;
         }
-        if (IM.timelineUI && app.view === 'editor') {
-          const ok = IM.timelineUI.drop(payload, ev.clientX, ev.clientY);
-          if (!ok) IM.timelineUI.dragLeave();
+        if (tgt && app.view === 'editor') {
+          const ok = tgt.drop(payload, ev.clientX, ev.clientY);
+          if (!ok) tgt.dragLeave();
         }
       };
       const key = (ev) => { if (ev.key === 'Escape') { st.cancelled = true; ev.preventDefault(); ev.stopPropagation(); up(ev); } };
@@ -478,6 +480,16 @@
       const existing = app.bsel.find((b) => b.mediaId === m.id && (m.kind === 'image' || (t >= b.a - 1e-3 && t <= b.b + 1e-3)));
       const handle = this.onHandle(s, pt);
       if (handle) { this.dragHandle(e, s, handle); return; }
+      if (IM.trailerUI && IM.trailerUI.wantsClick() && m.kind !== 'audio') {
+        // trailer: a click fills the selected shot from this point; a drag can drop onto any shot
+        const dur = IM.trailerUI.selDur();
+        IM.drag(e, () => {
+          if (this.dragging) return;
+          this.dragging = true;
+          this.startDnD(e, [{ mediaId: m.id, a: t, b: m.kind === 'image' ? 0 : Math.min(m.duration, t + dur) }]);
+        }, (ev, moved) => { this.dragging = false; if (!moved) IM.trailerUI.fillSelected(m, t); }, { threshold: 4 });
+        return;
+      }
       if (existing && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
         // drag the selection to the timeline, or click to reselect whole clip
         IM.drag(e, () => {

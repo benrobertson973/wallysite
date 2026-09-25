@@ -48,6 +48,7 @@
       p.eventId = ev.id;
       IM.lib.saveProject(p);
     }
+    if (p.kind === 'trailer' && IM.trailers) IM.trailers.ensure(p);
     app.player.setProject(p);
     IM.setView('editor');
     IM.bus.emit('project-opened', p);
@@ -115,11 +116,13 @@
 
   // ---------- undo / redo ----------
   function snap(p) {
-    return JSON.stringify({ clips: p.clips, connected: p.connected, music: p.music, settings: p.settings, name: p.name });
+    return JSON.stringify({ clips: p.clips, connected: p.connected, music: p.music, settings: p.settings, name: p.name, kind: p.kind, trailer: p.trailer || null });
   }
   function restore(p, s) {
     const o = JSON.parse(s);
     p.clips = o.clips; p.connected = o.connected; p.music = o.music; p.settings = o.settings; p.name = o.name;
+    p.kind = o.kind || 'movie';
+    if (o.trailer) p.trailer = o.trailer; else delete p.trailer;
     IM.Project.upgrade(p);
     IM.Project.invalidate(p);
   }
@@ -140,7 +143,11 @@
     if (!p) return;
     const before = snap(p);
     let r;
-    try { r = fn(p); } catch (e) { console.error(e); restore(p, before); IM.bus.emit('project-changed', p); return; }
+    try {
+      r = fn(p);
+      // a trailer's clips are regenerated from its outline and chosen shots
+      if (r !== false && p.kind === 'trailer' && IM.trailers) IM.trailers.afterEdit(p);
+    } catch (e) { console.error(e); restore(p, before); IM.bus.emit('project-changed', p); return; }
     if (r === false) { restore(p, before); return r; }
     IM.Project.invalidate(p);
     const after = snap(p);
@@ -169,6 +176,7 @@
     return {
       update(fn) { fn(p); IM.Project.invalidate(p); IM.bus.emit('project-live', p); app.player.invalidate(); },
       commit() {
+        if (p.kind === 'trailer' && IM.trailers) IM.trailers.afterEdit(p);
         IM.Project.invalidate(p);
         if (snap(p) === before) return;
         const h = hist();
@@ -227,7 +235,12 @@
     try {
       const r = IM.thumbRenderer && IM.thumbRenderer();
       if (!r || !p.clips.length) { p.poster = null; return; }
-      const t = IM.Project.posterFrameTime(p);
+      let t = IM.Project.posterFrameTime(p);
+      if (p.kind === 'trailer') {
+        // a trailer's poster is its title card
+        const e = IM.Project.layout(p).clips.find((x) => x.item.title && /^trailer-title/.test(x.item.title.style));
+        if (e) t = e.start + e.dur * 0.6;
+      }
       const spec = IM.Compose.frame(p, t, IM.stillProvider, { noStabRequest: true });
       r.render(spec);
       const c = document.createElement('canvas');

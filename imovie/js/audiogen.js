@@ -434,6 +434,101 @@
     chordNotes(sg.key, sg.scale, sg.prog[0], 3).forEach((m, i) => S.play(synth(sg.chords === 'pluck' ? 'piano' : sg.chords, m, 2.2, i), tEnd, { vel: 0.25, rev: 0.6 }));
     return S.ctx.startRendering();
   }
+  // ------------------------------------------------------------------ trailer scores
+  /**
+   * A cinematic cue fitted to a trailer's cut points.
+   * d: { duration, mood, bpm, key, scale: 'maj'|'min', seed, cues: { logoEnd, hits: [t], titleAt, creditsAt } }
+   */
+  const MOODS = {
+    epic: { drone: 'strings', ost: 'strings', stab: 'brass', drums: 'epic', hit: 'boom', lead: 'brass' },
+    action: { drone: 'strings', ost: 'strings', stab: 'brass', drums: 'action', hit: 'boom', lead: 'brass' },
+    dark: { drone: 'pad', ost: 'bell', stab: 'strings', drums: 'pulse', hit: 'boom', lead: 'bell' },
+    light: { drone: 'pad', ost: 'pluck', stab: 'piano', drums: 'light', hit: 'soft', lead: 'bell' },
+    romantic: { drone: 'strings', ost: 'piano', stab: 'strings', drums: 'none', hit: 'soft', lead: 'piano' },
+    retro: { drone: 'pad', ost: 'rhodes', stab: 'rhodes', drums: 'lofi', hit: 'soft', lead: 'lead' },
+    scifi: { drone: 'pad', ost: 'lead', stab: 'pad', drums: 'pulse', hit: 'boom', lead: 'lead' },
+    documentary: { drone: 'strings', ost: 'pluck', stab: 'piano', drums: 'light', hit: 'soft', lead: 'piano' },
+  };
+  function renderTrailerScore(d) {
+    const dur = d.duration;
+    const S = session(dur + 0.3, 2.8);
+    const M = MOODS[d.mood] || MOODS.epic;
+    const scale = d.scale === 'maj' ? MAJ : MIN;
+    const beat = 60 / d.bpm, bar = beat * 4;
+    const prog = d.prog || (d.scale === 'maj' ? [0, 4, 5, 3] : [0, 5, 2, 6]);
+    const cues = d.cues || {};
+    const logoEnd = cues.logoEnd || 0, titleAt = cues.titleAt || dur * 0.85, creditsAt = cues.creditsAt || dur;
+    const root = d.key;
+    // logo: a low swell
+    if (logoEnd > 0.5) {
+      S.play(synth(M.drone, root - 12, logoEnd + 0.6), 0, { vel: 0.45, rev: 0.6 });
+      S.play(synth(M.drone, root - 5, logoEnd + 0.6, 1), 0.2, { vel: 0.25, rev: 0.6, pan: 0.2 });
+      S.noise(Math.max(0, logoEnd - 1.6), 1.6, { filter: 'bandpass', q: 4, sweep: [300, 900, 2400, 5200], env: [[0.1, 0.2], [0.9, 1], [1, 0]], vel: 0.18, rev: 0.4 });
+    }
+    // body: an ostinato that grows toward the title
+    const bodyEnd = titleAt;
+    const nBars = Math.max(1, Math.ceil((bodyEnd - logoEnd) / bar));
+    for (let b = 0; b < nBars; b++) {
+      const t0 = logoEnd + b * bar;
+      if (t0 >= bodyEnd) break;
+      const k = nBars > 1 ? b / (nBars - 1) : 1;
+      const deg = prog[b % prog.length];
+      const chord = chordNotes(root, scale, deg, 3);
+      // sustained harmony
+      chord.forEach((m, i) => S.play(synth(M.drone, m - 12, Math.min(bar + 0.4, bodyEnd - t0 + 0.3), i + b), t0, { vel: (0.12 + 0.12 * k) * (i ? 0.7 : 1), pan: (i - 1) * 0.35, rev: 0.5 }));
+      // ostinato (eighths, sixteenths near the end)
+      const sub = M.drums === 'action' && k > 0.6 ? 4 : 2;
+      for (let s = 0; s < 4 * sub; s++) {
+        const t = t0 + s * beat / sub;
+        if (t >= bodyEnd - 0.05) break;
+        const m = chord[s % chord.length] + (s % 4 === 3 ? 12 : 0);
+        S.play(synth(M.ost, m, beat / sub * 1.6, s + b * 16), t, { vel: (0.1 + 0.2 * k) * (s % 2 ? 0.75 : 1), pan: s % 2 ? 0.25 : -0.25, rev: 0.3 });
+      }
+      // percussion
+      for (let s = 0; s < 16; s++) {
+        const t = t0 + s * beat / 4;
+        if (t >= bodyEnd - 0.05) break;
+        const v = 0.3 + 0.5 * k;
+        if (M.drums === 'epic') { if (s === 0 || (k > 0.5 && s === 10)) S.play(synth('timpani', root - 22, 1.2), t, { vel: 0.5 * v, rev: 0.4 }); }
+        else if (M.drums === 'action') { if (s % 4 === 0) S.play(synth('kick', 34, 0.4), t, { vel: 0.6 * v }); if (s % 8 === 4) S.play(synth('snare', 60, 0.3, s), t, { vel: 0.35 * v, rev: 0.3 }); if (k > 0.7 && s % 2 === 1) S.play(synth('snare', 62, 0.15, s), t, { vel: 0.18 * v }); }
+        else if (M.drums === 'light') { if (s % 8 === 0) S.play(synth('kick', 38, 0.3), t, { vel: 0.4 * v }); if (s % 8 === 4) S.play(synth('clap', 60, 0.25, s), t, { vel: 0.3 * v, rev: 0.2 }); if (s % 2 === 0) S.play(synth('hat', 72, 0.06, s), t, { vel: 0.18 * v }); }
+        else if (M.drums === 'lofi') { if (s === 0 || s === 7 || s === 10) S.play(synth('kick', 34, 0.4), t, { vel: 0.5 * v }); if (s === 4 || s === 12) S.play(synth('snare', 60, 0.3, s), t, { vel: 0.3 * v, rev: 0.2 }); if (s % 2 === 0) S.play(synth('hat', 68, 0.05, s), t, { vel: 0.16 * v }); }
+        else if (M.drums === 'pulse') { if (s % 4 === 0) S.play(synth('kick', 28, 0.5), t, { vel: 0.45 * v, rate: 0.85 }); }
+      }
+    }
+    // impacts on the cards
+    const hit = (t, big) => {
+      if (t < 0 || t >= dur) return;
+      if (M.hit === 'boom') {
+        S.tone(t, big ? 2.6 : 1.6, { type: 'sine', curve: [90, 55, 38, 30], env: [[0.005, 1], [0.25, 0.6], [1, 0]], vel: big ? 0.9 : 0.6 });
+        S.play(synth('timpani', root - 24, 1.6), t, { vel: big ? 0.8 : 0.5, rev: 0.5 });
+        S.noise(t, big ? 2.2 : 1.2, { filter: 'lowpass', freq: big ? 2400 : 1400, env: [[0.005, 1], [0.2, 0.35], [1, 0]], vel: big ? 0.35 : 0.2, rev: 0.6 });
+      } else {
+        S.play(synth('crash', 60, big ? 2.2 : 1.2), t, { vel: big ? 0.35 : 0.18, rev: 0.5 });
+        S.play(synth('kick', 36, 0.5), t, { vel: big ? 0.6 : 0.4 });
+      }
+      if (big) chordNotes(root, scale, prog[0], 3).forEach((m, i) => S.play(synth(M.stab, m, 2.4, i), t, { vel: 0.3, pan: (i - 1) * 0.3, rev: 0.6 }));
+    };
+    (cues.hits || []).forEach((t) => hit(t, false));
+    // riser into the title, then the big hit
+    S.noise(Math.max(logoEnd, titleAt - 2.4), Math.min(2.4, titleAt - logoEnd), { filter: 'bandpass', q: 3, sweep: [400, 1200, 3500, 8000], env: [[0.1, 0.1], [0.95, 1], [1, 0]], vel: 0.22, rev: 0.3 });
+    hit(titleAt, true);
+    // title & credits: sustained chord that fades out
+    const end = dur;
+    const tail = Math.max(1, end - titleAt);
+    chordNotes(root, scale, prog[0], 3).forEach((m, i) => S.play(synth(M.drone, m - 12, tail, 50 + i), titleAt + 0.05, { vel: 0.22, pan: (i - 1) * 0.3, rev: 0.7 }));
+    if (creditsAt < end) S.play(synth(M.lead, root + 12 + scale[4], Math.max(0.5, end - creditsAt), 9), creditsAt, { vel: 0.12, rev: 0.7 });
+    return S.ctx.startRendering().then((buf) => {
+      // fade the last half second so the movie ends cleanly
+      for (let c = 0; c < buf.numberOfChannels; c++) {
+        const x = buf.getChannelData(c), n = Math.min(x.length, Math.floor(0.5 * SR)), o = Math.floor(end * SR) - n;
+        for (let i = 0; i < n && o + i < x.length; i++) x[o + i] *= 1 - i / n;
+        for (let i = Math.max(0, o + n); i < x.length; i++) x[i] = 0;
+      }
+      return buf;
+    });
+  }
+
   async function renderSfx(def) {
     const S = session(def.duration + 0.05, 1.8);
     def.fn(S);
@@ -462,7 +557,13 @@
 
   IM.AudioGen = {
     sfx: SFX, soundtracks: SONGS,
-    registerAll() { for (const k of byId.keys()) IM.builtinMedia(k); },
+    registerAll() { for (const [k, d] of byId) if (d.kind !== 'trailer') IM.builtinMedia(k); },
+    /** Register (or look up) a trailer score; returns its built-in media id. */
+    trailerScore(def) {
+      const id = 'tr:' + IM.fnv(JSON.stringify(def));
+      if (!byId.has(id)) byId.set(id, Object.assign({ kind: 'trailer', id, name: def.name || 'Trailer Music', genre: 'Trailer' }, def));
+      return id;
+    },
   };
   /** Media item for a built-in sound (registered once, generated on demand). */
   IM.builtinMedia = function (rowId) {
@@ -484,7 +585,7 @@
     const d = byId.get(m.builtin);
     if (!d) return Promise.reject(new Error('unknown built-in sound'));
     m._gen = (async () => {
-      const buf = d.kind === 'song' ? await renderSong(d) : await renderSfx(d);
+      const buf = d.kind === 'song' ? await renderSong(d) : d.kind === 'trailer' ? await renderTrailerScore(d) : await renderSfx(d);
       m.audioBuffer = buf;
       m.duration = buf.duration;
       m.blob = wav(buf);

@@ -856,7 +856,16 @@
   });
 
   const map = new Map(styles.map((s) => [s.id, s]));
-  IM.TitleStyles = { list: styles, get: (id) => map.get(id) || map.get('standard') };
+  IM.TitleStyles = {
+    list: styles,
+    get: (id) => map.get(id) || map.get('standard'),
+    /** Styles shown in the Titles browser (trailer cards etc. are internal). */
+    visible: () => styles.filter((s) => !s.hidden),
+    /** Register an additional style (used by trailers). */
+    define(o) { def(o); map.set(styles[styles.length - 1].id, styles[styles.length - 1]); },
+  };
+  // drawing helpers for styles defined elsewhere
+  IM.TitleKit = { ph, font, fontPx, setShadow, noShadow, line, measure, roundRect, homography: typeof homography === 'function' ? homography : null };
 
   /**
    * Render a title item into a 2D context of size W x H at local time t.
