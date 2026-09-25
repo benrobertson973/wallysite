@@ -103,6 +103,10 @@
   ];
   IM.Themes = { list: THEMES, get: (id) => THEMES.find((t) => t.id === id) };
   IM.themes = {
+    /** "Automatic content": the theme adds its titles and transitions (turning it off removes them). */
+    setAutoContent(on) {
+      IM.edit('Automatic Content', (pp) => { pp.settings.autoContent = !!on; IM.themes.applyTo(pp, pp.settings.theme); });
+    },
     chooser() {
       const p = app.project;
       if (!p) return;
@@ -124,30 +128,29 @@
         h('div.sheet-footer', h('button.btn', { on: { click: () => s.close() } }, 'Cancel'), h('button.btn.primary', { on: { click: apply } }, 'Change'))), { floating: true });
     },
     apply(id) {
+      IM.edit(id ? 'Set Theme' : 'Remove Theme', (p) => IM.themes.applyTo(p, id));
+    },
+    /** Set theme `id` on project p (inside an edit), replacing any automatic content of the previous theme. */
+    applyTo(p, id) {
       const t = IM.Themes.get(id);
-      IM.edit(id ? 'Set Theme' : 'Remove Theme', (p) => {
-        const prev = p.settings.theme;
-        p.settings.theme = id;
-        // remove automatic theme content from the previous theme
-        if (prev) {
-          p.connected = p.connected.filter((c) => !c._theme);
-          p.clips.forEach((c) => { if (c.transition && c.transition._theme) c.transition = null; });
-        }
-        if (!t || !t.id || !p.clips.length) { Pr.invalidate(p); return; }
-        // theme transitions between clips
-        p.clips.forEach((c, i) => { if (i < p.clips.length - 1 && !c.transition) c.transition = { type: t.transition, dur: 1, _theme: true }; });
-        Pr.invalidate(p);
-        // opening title and closing credits
-        const open = Pr.makeTitle(t.title, { text: [p.name, ''], font: t.font, color: t.color });
-        open._theme = true;
-        Pr.connect(p, [open], 0, 3);
-        const L = Pr.layout(p);
-        const endT = Math.max(0, L.duration - 3);
-        const close = Pr.makeTitle('scrolling-credits', { font: t.font });
-        close.srcOut = Math.min(8, Math.max(2, L.duration - endT));
-        close._theme = true;
-        if (L.duration > 6) Pr.connect(p, [close], endT, 3);
-      });
+      p.settings.theme = id;
+      // remove automatic theme content (added by a previous theme or a previous application)
+      p.connected = p.connected.filter((c) => !c._theme);
+      p.clips.forEach((c) => { if (c.transition && c.transition._theme) c.transition = null; });
+      if (!t || !t.id || !p.clips.length || p.settings.autoContent === false) { Pr.invalidate(p); return; }
+      // theme transitions between clips
+      p.clips.forEach((c, i) => { if (i < p.clips.length - 1 && !c.transition) c.transition = { type: t.transition, dur: 1, _theme: true }; });
+      Pr.invalidate(p);
+      // opening title and closing credits
+      const open = Pr.makeTitle(t.title, { text: [p.name, ''], font: t.font, color: t.color });
+      open._theme = true;
+      Pr.connect(p, [open], 0, 3);
+      const L = Pr.layout(p);
+      const endT = Math.max(0, L.duration - 3);
+      const close = Pr.makeTitle('scrolling-credits', { font: t.font });
+      close.srcOut = Math.min(8, Math.max(2, L.duration - endT));
+      close._theme = true;
+      if (L.duration > 6) Pr.connect(p, [close], endT, 3);
     },
   };
 })(window.IM = window.IM || {});

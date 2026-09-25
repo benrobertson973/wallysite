@@ -1796,16 +1796,19 @@
         onChange: () => IM.lib.saveProject(p),
       });
       const waves = IM.checkbox('Show Waveforms', p.settings.waveforms !== false, (v) => { p.settings.waveforms = v; IM.lib.saveProject(p); this.redraw(); });
-      const tmusic = IM.checkbox('Theme music', !!p.settings.themeMusic, (v) => { p.settings.themeMusic = v; IM.lib.saveProject(p); });
-      tmusic.querySelector('input').disabled = !p.settings.theme;
+      const auto = IM.checkbox('Automatic content', p.settings.autoContent !== false, (v) => IM.themes.setAutoContent(v));
+      auto.querySelector('input').disabled = !p.settings.theme;
+      const setting = (key, label) => IM.checkbox(label, !!p.settings[key], (v) => IM.edit(label, (pp) => { pp.settings[key] = v; Pr.invalidate(pp); }));
       const content = h('div.ps-pop',
         h('h4', 'Project Settings'),
         h('div.ps-row', themeBtn, h('div.ps-col', h('div.ps-label', 'Theme'), h('div.ps-value', themeName))),
+        h('div.ps-row.indent', auto),
         h('div.ps-row', filterBtn, h('div.ps-col', h('div.ps-label', 'Filter'), h('div.ps-value', filterName))),
-        h('div.ps-row.indent', tmusic),
         h('div.pop-sep'),
         h('div.ps-size', h('span', 'Clip Size'), h('span.ps-small', IM.icon('film', 12)), sizeSlider, h('span.ps-large', IM.icon('film', 18))),
-        h('div.ps-row.indent', waves));
+        h('div.ps-row.indent', waves),
+        h('div.ps-row.indent', setting('fadeIn', 'Fade in from black')),
+        h('div.ps-row.indent', setting('fadeOut', 'Fade out to black')));
       IM.popover(anchor, content, { side: 'bottom', align: 'right' });
     },
   };

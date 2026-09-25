@@ -20,6 +20,9 @@
       const tt = Math.min(t, Math.max(0, L.duration - 1e-3));
       const act = Pr.activeAt(p, tt);
       const prim = act.prim;
+      spec.fade = Pr.movieFade(p, tt);
+      // the project filter animates on the current clip's local time (keeps rendered sections position-independent)
+      spec.pfTime = prim.length ? tt - prim[0].start : tt;
       if (prim.length === 1) spec.base = Compose.layer(prim[0], tt, provider, true, opts);
       else if (prim.length >= 2) {
         const a = prim[0], b = prim[1];
@@ -207,7 +210,7 @@
       }
       // project-wide filter (before titles)
       if (spec.projectFilter && spec.projectFilter !== 'none') {
-        g.draw(this.clipProg(spec.projectFilter), fb.acc2, this.clipUniforms(null, [0, 0, 1, 1], 0, spec.projectFilter === 'flipped', 1, spec.time), { u_tex: fb.acc });
+        g.draw(this.clipProg(spec.projectFilter), fb.acc2, this.clipUniforms(null, [0, 0, 1, 1], 0, spec.projectFilter === 'flipped', 1, spec.pfTime != null ? spec.pfTime : spec.time), { u_tex: fb.acc });
         this._swapAcc();
       }
       // titles

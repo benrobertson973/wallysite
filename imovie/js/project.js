@@ -48,13 +48,13 @@
         id: IM.uid('p'), name: name || 'My Movie', eventId: eventId || null,
         created: Date.now(), modified: Date.now(), kind: 'movie',
         clips: [], connected: [], music: [],
-        settings: { filter: 'none', theme: null, themeMusic: false, fadeIn: false, fadeOut: false, zoom: 40, clipSize: 0.3, waveforms: true },
+        settings: { filter: 'none', theme: null, autoContent: true, fadeIn: false, fadeOut: false, zoom: 40, clipSize: 0.3, waveforms: true },
         fps: 30, playhead: 0, version: 1,
       };
     },
     upgrade(p) {
       p.clips = p.clips || []; p.connected = p.connected || []; p.music = p.music || [];
-      p.settings = Object.assign({ filter: 'none', theme: null, themeMusic: false, fadeIn: false, fadeOut: false, zoom: 40, clipSize: 0.3, waveforms: true }, p.settings || {});
+      p.settings = Object.assign({ filter: 'none', theme: null, autoContent: true, fadeIn: false, fadeOut: false, zoom: 40, clipSize: 0.3, waveforms: true }, p.settings || {});
       const fix = (it) => {
         it.audio = Object.assign(defaultAudio(), it.audio || {});
         const dv = defaultVideo();
@@ -205,6 +205,22 @@
       return L;
     },
     invalidate(p) { p.version = (p.version || 0) + 1; p._layout = null; },
+    /** Seconds of the "Fade in from black" / "Fade out to black" project settings. */
+    FADE_SEC: 1,
+    /**
+     * Amount of black (0..1) at time t from the project's fade settings. Frame 0 is fully black when
+     * fading in and the last frame is fully black when fading out.
+     */
+    movieFade(p, t) {
+      const st = p.settings || {};
+      if (!st.fadeIn && !st.fadeOut) return 0;
+      const L = Project.layout(p);
+      const fps = L.fps, f = Math.round(t * fps), n = Math.max(1, Math.round(Project.FADE_SEC * fps));
+      let a = 0;
+      if (st.fadeIn) a = Math.max(a, clamp(1 - f / n, 0, 1));
+      if (st.fadeOut) a = Math.max(a, clamp(1 - (L.durationF - 1 - f) / n, 0, 1));
+      return a;
+    },
     duration(p) { return Project.layout(p).duration; },
     /** Frame index shown at time t. */
     frameAt(p, t) { return Math.floor(t * Project.fps(p) + 1e-6); },

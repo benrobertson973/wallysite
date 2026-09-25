@@ -93,7 +93,13 @@
     s.close();
     return out;
   }
-  async function elementFrame(server, t) {
+  // one seek at a time on a server's fallback <video> element
+  function elementFrame(server, t) {
+    const run = (server._elQueue || Promise.resolve()).then(() => elementFrameNow(server, t));
+    server._elQueue = run.catch(() => {});
+    return run;
+  }
+  async function elementFrameNow(server, t) {
     const el = server.el;
     await IM.seekMedia(el, t, 8000);
     if ('requestVideoFrameCallback' in el) {
@@ -133,6 +139,23 @@
     next() { return elementFrame(this.server, this.times[this.i++]); }
     close() { /* */ }
   }
+
+  // ------------------------------------------------------------------ render lock
+  const RenderLock = {
+    busy: false, waiters: [], fgWaiting: 0,
+    async acquire(fg) {
+      if (fg) this.fgWaiting++;
+      try {
+        while (this.busy) await new Promise((r) => this.waiters.push(r));
+        this.busy = true;
+      } finally { if (fg) this.fgWaiting--; }
+    },
+    release() {
+      this.busy = false;
+      const next = this.waiters.shift();
+      if (next) next();
+    },
+  };
 
   // ------------------------------------------------------------------ exact provider
   /** Frame provider for Compose that serves frames fetched ahead of rendering. */
@@ -193,6 +216,11 @@
     const vis = visualEntries(L);
     for (const e of vis) { if (e.startF > 0 && e.startF < total) cuts.add(e.startF); if (e.endF > 0 && e.endF < total) cuts.add(e.endF); }
     for (const e of L.clips) if (e.trOutF) { const b = e.endF - e.trOutF; if (b > 0 && b < total) cuts.add(b); }
+    // fade in from black / out to black depend on the distance to the movie's start / end
+    const st = p.settings || {};
+    const fadeN = Math.max(1, Math.round(Pr.FADE_SEC * fps));
+    if (st.fadeIn && fadeN < total) cuts.add(fadeN);
+    if (st.fadeOut && total - fadeN > 0) cuts.add(total - fadeN);
     const sorted = Array.from(cuts).sort((a, b) => a - b);
     const maxLen = Math.max(1, Math.round(SEG_MAX_SEC * fps));
     const segs = [];
@@ -215,7 +243,10 @@
         const o = layers.find((x) => x.w === 'primary' && x.off === seg.sF - e.startF);
         if (o && prev.item.transition) o.inType = prev.item.transition.type;
       }
-      const sig = JSON.stringify({ n: seg.eF - seg.sF, fps, fmt: fmt.key, pf, layers });
+      const fade = {};
+      if (st.fadeIn && seg.sF < fadeN) fade.fi = seg.sF;
+      if (st.fadeOut && seg.eF > total - fadeN) fade.fo = total - seg.sF;
+      const sig = JSON.stringify({ n: seg.eF - seg.sF, fps, fmt: fmt.key, pf, layers, fade });
       seg.sig = sig;
       seg.key = fmt.key + '|' + fnv(sig);
     }
@@ -428,10 +459,17 @@
     },
     /**
      * Render frames [sF, eF) of project p. For each frame calls onFrame(f, canvas) after drawing.
-     * opts.shouldAbort() can cancel between frames.
+     * opts.shouldAbort() can cancel between frames. Renders never overlap (they share one renderer):
+     * opts.background renders yield to any foreground render that is waiting.
      */
     async renderRange(p, sF, eF, W, H, onFrame, opts) {
       opts = opts || {};
+      await RenderLock.acquire(!opts.background);
+      try {
+        return await this._renderRange(p, sF, eF, W, H, onFrame, opts);
+      } finally { RenderLock.release(); }
+    },
+    async _renderRange(p, sF, eF, W, H, onFrame, opts) {
       const L = Pr.layout(p);
       const fps = L.fps;
       const r = this.getRenderer(W, H);
@@ -485,6 +523,7 @@
     async encodeSegment(p, seg, fmt, session, opts) {
       const fps = fmt.fps;
       await this.renderRange(p, seg.sF, seg.eF, fmt.W, fmt.H, async (f, canvas) => {
+        if (canvas.width !== fmt.W || canvas.height !== fmt.H) throw new RenderError('A frame was rendered at the wrong size.', { frame: f });
         const frame = new VideoFrame(canvas, { timestamp: Math.round(f / fps * 1e6), duration: Math.round(1e6 / fps) });
         try { await session.encode(frame, f === seg.sF); } finally { frame.close(); }
       }, opts);
@@ -846,7 +885,6 @@
         await output.start();
         const totalFrames = L.durationF;
         let framesDone = 0, reused = 0, rendered = 0;
-        let session = null;
         let firstPacket = true;
         const addPackets = async (seg, data) => {
           const base = seg.sF / fmt.fps;
@@ -866,23 +904,22 @@
             if (data) reused += seg.eF - seg.sF;
           }
           if (!data) {
-            if (!session) session = new EncoderSession(fmt);
-            const baseDone = framesDone;
-            data = await Engine.encodeSegment(p, seg, fmt, session, {
-              shouldAbort: () => state.cancelled,
-            });
+            // every section starts from a fresh encoder (as background sections do), so a cached section is
+            // bit-identical to what a fresh export would produce
+            const session = new EncoderSession(fmt);
+            try {
+              data = await Engine.encodeSegment(p, seg, fmt, session, { shouldAbort: () => state.cancelled });
+            } finally { session.close(); }
             if (refConfig && data.config && !configsCompatible(data.config, refConfig)) {
               throw new RenderError('The video encoder changed its configuration mid-export. Please try again.');
             }
             rendered += seg.eF - seg.sF;
             Cache.put(seg.key, data).catch(() => {});
-            void baseDone;
           }
           await addPackets(seg, data);
           framesDone += seg.eF - seg.sF;
           progress(0.05 + 0.85 * framesDone / totalFrames, 'Rendering…');
         }
-        if (session) session.close();
         if (asrc) { progress(0.9, 'Encoding audio…'); await asrc.add(mix); }
         vsrc.close(); if (asrc) asrc.close();
         progress(0.93, 'Finishing…');
@@ -1095,7 +1132,9 @@
           const session = new EncoderSession(fmt);
           try {
             const data = await Engine.encodeSegment(p, todo, fmt, session, {
-              shouldAbort: () => !this.idle() || IM.app.project !== p || p.version !== version,
+              background: true,
+              // stop at the next frame when the user is back, the movie changed, or a foreground render waits
+              shouldAbort: () => !this.idle() || IM.app.project !== p || p.version !== version || RenderLock.fgWaiting > 0,
             });
             await Cache.put(todo.key, data);
           } finally { session.close(); }
