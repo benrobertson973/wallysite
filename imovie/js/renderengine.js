@@ -643,39 +643,62 @@
     return ch;
   }
   /** Pitch-preserving time stretch (WSOLA). rate > 1 = faster/shorter. */
-  function wsola(chans, rate, outLen) {
+  /**
+   * Pitch-preserving time stretch (WSOLA). chans hold the source with `pre` samples of context before the
+   * clip's first sample. Grain k is centred on output sample k*Hs and taken around source sample
+   * pre + k*Hs*rate, so output time t always plays source time t*rate (within the similarity search).
+   */
+  function wsola(chans, rate, outLen, pre) {
+    pre = pre || 0;
     const sr = AUDIO_SR;
     const inLen = chans[0].length;
-    const N = 1920, Hs = N / 2, Ha = Hs * rate;
+    const N = 1920, Hs = N / 2, half = N / 2;
+    // Similarity search window. Among the positions that match the previous grain's continuation well
+    // (within 8% of the best), the one closest to the exact position wins — good phase alignment for low
+    // notes without drifting away from the exact timing.
     const tol = Math.round(sr * 0.012);
     const win = new Float32Array(N);
     for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
-    const out = chans.map(() => new Float32Array(outLen + N));
-    const norm = new Float32Array(outLen + N);
+    // output is accumulated with `half` samples of lead-in so grain 0 can be centred on sample 0
+    const out = chans.map(() => new Float32Array(outLen + N + half));
+    const norm = new Float32Array(outLen + N + half);
     const mono = new Float32Array(inLen);
     for (let i = 0; i < inLen; i++) mono[i] = (chans[0][i] + (chans[1] ? chans[1][i] : chans[0][i])) * 0.5;
     let prev = 0;
     const L = Hs;
-    for (let k = 0, op = 0; op < outLen; k++, op += Hs) {
-      const nominal = Math.round(k * Ha);
+    const nat0 = (pv) => pv + Hs;
+    for (let k = 0; k * Hs - half < outLen; k++) {
+      const op = k * Hs;  // index in the lead-in buffer (= output sample k*Hs - half)
+      const nominal = Math.round(pre + k * Hs * rate - half);
       let best = nominal;
-      if (k > 0) {
+      if (k > 0 && nat0(prev) >= 0 && nat0(prev) + L < inLen) {
         const nat = prev + Hs;
-        let bestC = -Infinity;
+        // normalised correlation with the natural continuation
+        const score = (q, step) => {
+          let c = 0, e = 1e-9;
+          for (let j = 0; j < L; j += step) { const a = mono[q + j]; c += a * mono[nat + j]; e += a * a; }
+          return c / Math.sqrt(e);
+        };
+        const cand = [];
+        let maxS = -Infinity;
         for (let d = -tol; d <= tol; d += 4) {
           const q = nominal + d;
-          if (q < 0 || q + L >= inLen || nat + L >= inLen) continue;
-          let c = 0;
-          for (let j = 0; j < L; j += 8) c += mono[q + j] * mono[nat + j];
-          if (c > bestC) { bestC = c; best = q; }
+          if (q < 0 || q + L >= inLen) continue;
+          const c = score(q, 8);
+          cand.push([d, c]);
+          if (c > maxS) maxS = c;
         }
-        const coarse = best;
-        for (let d = -3; d <= 3; d++) {
-          const q = coarse + d;
-          if (q < 0 || q + L >= inLen || nat + L >= inLen) continue;
-          let c = 0;
-          for (let j = 0; j < L; j += 2) c += mono[q + j] * mono[nat + j];
-          if (c > bestC) { bestC = c; best = q; }
+        if (cand.length) {
+          const thr = maxS - 0.08 * Math.abs(maxS);
+          let pick = null;
+          for (const [d, c] of cand) if (c >= thr && (!pick || Math.abs(d) < Math.abs(pick[0]))) pick = [d, c];
+          // climb to the local peak
+          let q = nominal + pick[0], cur = score(q, 2);
+          for (let guard = 0; guard < 64; guard++) {
+            const up = q + 1 + L < inLen ? score(q + 1, 2) : -Infinity, dn = q - 1 >= 0 ? score(q - 1, 2) : -Infinity;
+            if (up > cur && up >= dn) { q++; cur = up; } else if (dn > cur) { q--; cur = dn; } else break;
+          }
+          best = q;
         }
       }
       for (let c = 0; c < chans.length; c++) {
@@ -685,7 +708,7 @@
       for (let j = 0; j < N; j++) norm[op + j] += win[j];
       prev = best;
     }
-    return out.map((o) => { const r = new Float32Array(outLen); for (let i = 0; i < outLen; i++) r[i] = norm[i] > 1e-3 ? o[i] / norm[i] : 0; return r; });
+    return out.map((o) => { const r = new Float32Array(outLen); for (let i = 0; i < outLen; i++) { const n = norm[i + half]; r[i] = n > 1e-3 ? o[i + half] / n : 0; } return r; });
   }
   IM.wsola = wsola;
 
@@ -701,15 +724,18 @@
     const key = [m.id, it.srcIn.toFixed(5), it.srcOut.toFixed(5), sp, !!it.reverse, it.preservePitch !== false, e.durF, e.dur.toFixed(5)].join('|');
     if (audioCache.has(key)) { const b = audioCache.get(key); audioCache.delete(key); audioCache.set(key, b); return b; }
     const outLen = Math.max(1, Math.round(e.dur * AUDIO_SR));
-    const srcA = it.srcIn, srcB = Math.min(it.srcOut, it.srcIn + e.dur * sp + 0.05);
+    const stretch = Math.abs(sp - 1) >= 1e-4 && it.preservePitch !== false;
+    // time stretching needs a little real audio around the clip (grains are centred on the clip's edges)
+    const ctxSec = stretch ? 0.08 : 0;
+    const srcA = Math.max(0, it.srcIn - ctxSec), srcB = Math.min(stretch ? m.duration || it.srcOut : it.srcOut, it.srcIn + e.dur * sp + (stretch ? ctxSec : 0.05));
     let ch = await decodeRange(m, srcA, srcB);
     if (!ch) return null;
-    const needLen = Math.round(e.dur * sp * AUDIO_SR);
     if (Math.abs(sp - 1) < 1e-4) {
       ch = ch.map((c) => { const r = new Float32Array(outLen); r.set(c.subarray(0, Math.min(c.length, outLen))); return r; });
-    } else if (it.preservePitch !== false) {
-      const src = ch.map((c) => c.subarray(0, Math.min(c.length, needLen)));
-      ch = wsola(src, sp, outLen);
+    } else if (stretch) {
+      const pre = Math.round((it.srcIn - srcA) * AUDIO_SR);
+      // audio after the clip's range is only context for grains that straddle its end
+      ch = wsola(ch, sp, outLen, pre);
     } else {
       // varispeed: resample (pitch changes with speed)
       ch = ch.map((c) => {
@@ -765,9 +791,9 @@
       const g = ctx.createGain();
       const step = 1 / 100;
       const t0 = e.start, t1 = Math.min(dur, e.end);
-      g.gain.setValueAtTime(IM.itemGain(it, 0, e.dur) * IM.duckFactor(p, L, t0, it.id), t0);
-      for (let t = t0 + step; t < t1; t += step) g.gain.linearRampToValueAtTime(IM.itemGain(it, t - e.start, e.dur) * IM.duckFactor(p, L, t, it.id), t);
-      g.gain.linearRampToValueAtTime(IM.itemGain(it, e.dur, e.dur) * IM.duckFactor(p, L, t1, it.id), t1);
+      g.gain.setValueAtTime(IM.itemGain(it, 0, e.dur, e) * IM.duckFactor(p, L, t0, it.id), t0);
+      for (let t = t0 + step; t < t1; t += step) g.gain.linearRampToValueAtTime(IM.itemGain(it, t - e.start, e.dur, e) * IM.duckFactor(p, L, t, it.id), t);
+      g.gain.linearRampToValueAtTime(IM.itemGain(it, e.dur, e.dur, e) * IM.duckFactor(p, L, t1, it.id), t1);
       if (IM.chainKey(it.audio) !== 'flat|none|0') {
         const ch = IM.buildAudioChain(ctx, it.audio);
         src.connect(ch.input); ch.output.connect(g);

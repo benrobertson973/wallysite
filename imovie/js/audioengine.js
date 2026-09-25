@@ -162,12 +162,18 @@
 
   // ---------- gain envelope helpers (shared by playback + export) ----------
   /** Returns gain factor for item audio at local time (fades + volume + mute). */
-  IM.itemGain = function (it, local, dur) {
+  /** Gain of item `it` at `local` seconds into its `dur`; `e` (layout entry) adds transition crossfades. */
+  IM.itemGain = function (it, local, dur, e) {
     const a = it.audio || {};
     if (a.mute) return 0;
     let g = a.volume == null ? 1 : a.volume;
     if (a.fadeIn > 0 && local < a.fadeIn) g *= Math.sin(clamp(local / a.fadeIn, 0, 1) * Math.PI / 2);
     if (a.fadeOut > 0 && dur - local < a.fadeOut) g *= Math.sin(clamp((dur - local) / a.fadeOut, 0, 1) * Math.PI / 2);
+    // transitions crossfade the audio of the two clips (equal power)
+    if (e && e.where === 'primary') {
+      if (e.trIn > 0 && local < e.trIn) g *= Math.sin(clamp(local / e.trIn, 0, 1) * Math.PI / 2);
+      if (e.trOut > 0 && dur - local < e.trOut) g *= Math.sin(clamp((dur - local) / e.trOut, 0, 1) * Math.PI / 2);
+    }
     return g;
   };
   /** Ducking multiplier for item at timeline time t given layout. */

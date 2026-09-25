@@ -369,7 +369,7 @@
         const seekMode = !fwd || it.type === 'freeze' || it.reverse;
         if (seekMode || !inRange) {
           if (playing && inRange && this.rate === 1 && hasSound && it.type !== 'freeze') {
-            this._voice(e, local, IM.itemGain(it, local, e.dur) * IM.duckFactor(p, L, t, it.id));
+            this._voice(e, local, IM.itemGain(it, local, e.dur, e) * IM.duckFactor(p, L, t, it.id));
             liveVoices.add(it.id);
           }
           if (!el.paused) el.pause();
@@ -390,7 +390,7 @@
           if (Math.abs(drift) > 0.3 * Math.max(1, pr)) seekEl(el, want);
         }
         // audio
-        const g = IM.itemGain(it, local, e.dur) * IM.duckFactor(p, L, t, it.id) * (this.muteProject && !it._voiceover ? 0 : 1);
+        const g = IM.itemGain(it, local, e.dur, e) * IM.duckFactor(p, L, t, it.id) * (this.muteProject && !it._voiceover ? 0 : 1);
         const needsBuffer = it.reverse || Math.abs(sp - 1) > 1e-4;
         if (hasSound && !mutedFast && needsBuffer) {
           this.audio.setGain(el, 0);
@@ -612,7 +612,7 @@
       this.audio.init();
       const el = this.vpool.acquire(e.item.id, m);
       this.audio.configure(el, e.item.audio);
-      this.audio.setGain(el, 0.8 * IM.itemGain(e.item, t - e.start, e.dur), true);
+      this.audio.setGain(el, 0.8 * IM.itemGain(e.item, t - e.start, e.dur, e), true);
       const p2 = el.play(); if (p2 && p2.catch) p2.catch(() => {});
       clearTimeout(this._blipTimer);
       this._blipTimer = setTimeout(() => { if (!this.playing) { el.pause(); this.audio.setGain(el, 0); } }, 90);
