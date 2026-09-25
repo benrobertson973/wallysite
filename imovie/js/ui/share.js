@@ -155,6 +155,8 @@
       } catch (e) {
         this.job = null;
         IM.bus.emit('export-progress', null);
+        // remove the empty file the save panel created (an existing file keeps its previous contents)
+        if (handle) { try { if ((await handle.getFile()).size === 0 && handle.remove) await handle.remove(); } catch (err) { /* */ } }
         if (e && e.name === 'AbortRender') { IM.notify('Share Cancelled', `“${name}” wasn’t shared.`); return; }
         console.error(e);
         IM.alert({ title: 'Share Failed', message: (e && e.message) || 'An unknown error occurred while rendering the movie.' });

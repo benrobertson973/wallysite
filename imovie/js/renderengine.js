@@ -860,6 +860,7 @@
       this.running = state;
       BG.pause(true);
       const progress = (f, label) => { if (o.onProgress) o.onProgress(clamp(f, 0, 1), label); };
+      let output = null, writable = null;
       try {
         await Engine.prepare(p);
         const L = Pr.layout(p);
@@ -875,9 +876,10 @@
         progress(0, 'Preparing audio…');
         const mix = await mixdown(p, { onProgress: (f) => progress(f * 0.05, 'Preparing audio…') });
         const useHandle = !!(o.fileHandle && fmt.container === 'mp4');
-        const target = useHandle ? new mb.StreamTarget(await o.fileHandle.createWritable(), { chunked: true }) : new mb.BufferTarget();
+        if (useHandle) writable = await o.fileHandle.createWritable();
+        const target = useHandle ? new mb.StreamTarget(writable, { chunked: true }) : new mb.BufferTarget();
         const format = fmt.container === 'mp4' ? new mb.Mp4OutputFormat({ fastStart: useHandle ? false : 'in-memory' }) : new mb.WebMOutputFormat();
-        const output = new mb.Output({ format, target });
+        output = new mb.Output({ format, target });
         const vsrc = new mb.EncodedVideoPacketSource(fmt.codec);
         output.addVideoTrack(vsrc, { frameRate: fmt.fps });
         let asrc = null;
@@ -939,6 +941,11 @@
         }
         progress(1, 'Done');
         return { blob, mime, ext: fmt.container === 'mp4' ? 'mp4' : 'webm', usedHandle: useHandle, verified: ver.ok, verification: ver, stats: { frames: totalFrames, reused, rendered, fmt } };
+      } catch (e) {
+        // cancelled or failed: leave no half-written movie behind (a picked file keeps its previous contents)
+        if (output && output.state !== 'finalized') { try { await output.cancel(); } catch (err) { /* */ } }
+        if (writable) { try { await writable.abort(); } catch (err) { /* already closed */ } }
+        throw e;
       } finally {
         this.running = null;
         BG.pause(false);
