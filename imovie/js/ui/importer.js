@@ -219,30 +219,66 @@
   };
   IM.importer = Importer;
 
-  // drag files from the desktop anywhere onto the window
+  // ---------------------------------------------------------------- drag files in from the desktop
+  // Anywhere on the window they're imported. Over the timeline they also go where they're dropped (a gap opens
+  // while hovering, as when dragging from the browser); on the Projects screen they start a new movie.
   let overlay = null, depth = 0;
-  window.addEventListener('dragenter', (e) => {
-    if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
-    e.preventDefault();
-    depth++;
-    if (!overlay && !Importer.sheet && app.view !== 'projects') {
-      overlay = h('div.drop-files-overlay', 'Drop to import into ' + ((IM.lib.eventById(Importer.defaultEvent()) || {}).name || 'your library'));
+  const hasFiles = (e) => !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  const timelineAt = (x, y) => {
+    const tl = IM.timelineUI;
+    if (app.view !== 'editor' || !app.project || !tl || !tl.canvas || Importer.sheet) return null;
+    if (IM.trailerUI && IM.trailerUI.active()) return null;
+    const r = tl.canvas.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom ? tl : null;
+  };
+  // what the timeline expects while files are dragged over it (their lengths are only known once imported)
+  const draggedFiles = (dt) => {
+    const kinds = Array.from(dt.items || []).filter((i) => i.kind === 'file').map((i) => IM.mediaTypeOf({ type: i.type || '', name: '' }));
+    return { kind: 'media', items: [], dur: 4 * Math.max(1, kinds.length), audioOnly: kinds.length > 0 && kinds.every((k) => k === 'audio') };
+  };
+  const showOverlay = (on) => {
+    if (on && !overlay && !Importer.sheet) {
+      overlay = h('div.drop-files-overlay', app.view === 'projects' ? 'Drop to make a new movie'
+        : 'Drop to import into ' + ((IM.lib.eventById(Importer.defaultEvent()) || {}).name || 'your library'));
       IM.$('#window').appendChild(overlay);
-    }
+    } else if (!on && overlay) { overlay.remove(); overlay = null; }
+  };
+  const leaveTimeline = () => { if (IM.timelineUI && IM.timelineUI.ext) IM.timelineUI.dragLeave(); };
+  window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; });
+  window.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    const tl = timelineAt(e.clientX, e.clientY);
+    const onTimeline = !!tl && tl.dragOver(draggedFiles(e.dataTransfer), e.clientX, e.clientY);
+    if (!tl) leaveTimeline();
+    showOverlay(!onTimeline);
   });
-  window.addEventListener('dragover', (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
-  window.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth && overlay) { overlay.remove(); overlay = null; } });
+  window.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    depth = Math.max(0, depth - 1);
+    if (!depth) { showOverlay(false); leaveTimeline(); }
+  });
   window.addEventListener('drop', async (e) => {
     if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
     e.preventDefault();
     depth = 0;
-    if (overlay) { overlay.remove(); overlay = null; }
+    showOverlay(false);
+    // (the dropped files can only be read while the event is being handled)
+    const files = Array.from(e.dataTransfer.files);
+    const x = e.clientX, y = e.clientY;
     if (Importer.sheet) return;
-    if (app.view === 'projects') { const p = await IM.newMovie(); void p; }
-    const items = await Importer.importFiles(e.dataTransfer.files);
-    // dropped directly on the timeline: add to the movie too
-    if (items.length && app.view === 'editor' && IM.timelineUI && IM.timelineUI.body.contains(document.elementFromPoint(e.clientX, e.clientY))) {
-      IM.insertBrowserItems(items.map((m) => ({ mediaId: m.id, a: 0, b: m.kind === 'image' ? 0 : m.duration })), 'append');
+    const tl = timelineAt(x, y);
+    const fromProjects = app.view === 'projects';
+    if (fromProjects) await IM.newMovie();
+    const items = await Importer.importFiles(files);
+    if (!items.length) { leaveTimeline(); return; }
+    const list = items.map((m) => ({ mediaId: m.id, a: 0, b: m.kind === 'image' ? 0 : m.duration }));
+    if (tl && app.view === 'editor') {
+      const dur = items.reduce((s, m) => s + (m.kind === 'image' ? (IM.prefs.photoDuration || 4) : m.duration), 0);
+      if (!tl.drop({ kind: 'media', items: list, dur, audioOnly: items.every((m) => m.kind === 'audio') }, x, y)) leaveTimeline();
+    } else if (fromProjects) {
+      IM.insertBrowserItems(list, 'append');
     }
   });
 })(window.IM = window.IM || {});

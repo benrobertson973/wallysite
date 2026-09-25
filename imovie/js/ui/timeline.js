@@ -26,6 +26,7 @@
 
   // custom cursors (iMovie style trim cursors)
   const cur = (svg, x, y, fb) => `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}") ${x} ${y}, ${fb}`;
+  const PH_HANDLE_W = 13, PH_HANDLE_H = 13; // playhead grab handle
   const CURSORS = {
     trimStart: cur('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><g stroke="#000" stroke-width="3.2" fill="none" stroke-linecap="round"><path d="M9 5v14M9 5h3M9 19h3M4 12h13M14 9l3 3-3 3"/></g><g stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"><path d="M9 5v14M9 5h3M9 19h3M4 12h13M14 9l3 3-3 3"/></g></svg>', 9, 12, 'ew-resize'),
     trimEnd: cur('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><g stroke="#000" stroke-width="3.2" fill="none" stroke-linecap="round"><path d="M15 5v14M15 5h-3M15 19h-3M20 12H7M10 9l-3 3 3 3"/></g><g stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"><path d="M15 5v14M15 5h-3M15 19h-3M20 12H7M10 9l-3 3 3 3"/></g></svg>', 15, 12, 'ew-resize'),
@@ -321,6 +322,18 @@
       const phx = this.tx(pl.t) - sl;
       ctx.fillStyle = COL.playhead;
       ctx.fillRect(Math.round(phx) - 0.5, 0, 1.5, this.H);
+      // grab handle at the top of the playhead
+      {
+        const hx = Math.round(phx) + 0.25, w = PH_HANDLE_W / 2;
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1;
+        ctx.beginPath();
+        ctx.moveTo(hx - w, 0); ctx.lineTo(hx + w, 0); ctx.lineTo(hx + w, PH_HANDLE_H - 5);
+        ctx.lineTo(hx, PH_HANDLE_H); ctx.lineTo(hx - w, PH_HANDLE_H - 5); ctx.closePath();
+        ctx.fillStyle = this.drag && this.drag.kind === 'playhead' ? '#dcdcdc' : COL.playhead;
+        ctx.fill();
+        ctx.restore();
+      }
       if (this.hovering && pl.skimming && pl.skimT != null && !pl.playing && !this.drag) {
         const sx = this.tx(pl.skimT) - sl;
         ctx.fillStyle = COL.skimmer;
@@ -845,6 +858,7 @@
     },
     cursorFor(hit) {
       if (!hit) return 'default';
+      if (hit.kind === 'playhead') return 'ew-resize';
       if (hit.kind === 'item') {
         switch (hit.part) {
           case 'trimStart': return CURSORS.trimStart;
@@ -871,7 +885,7 @@
       this.hovering = true;
       const hit = this.hit(pt);
       const prev = this.hover;
-      this.hover = hit.kind === 'item' || hit.kind === 'transition' ? hit : null;
+      this.hover = this.onPlayhead(pt, hit) ? { kind: 'playhead' } : hit.kind === 'item' || hit.kind === 'transition' ? hit : null;
       this.updateCursor();
       if (this.p && app.player.skimming) {
         const t = clamp(this.xt(pt.x), 0, Pr.duration(this.p));
@@ -897,6 +911,7 @@
       app.focus = 'timeline';
       const pt = this.toContent(e);
       const hit = this.hit(pt);
+      if (this.onPlayhead(pt, hit)) { this.startPlayheadDrag(e, pt); return; }
       const pl = app.player;
       if (pl.isPlaying() && hit.kind !== 'item') pl.pause();
       const clickT = clamp(this.xt(pt.x), 0, Pr.duration(this.p));
@@ -938,6 +953,50 @@
         case 'speed': this.startSpeed(e, hit); break;
         default: this.startMove(e, hit, pt);
       }
+    },
+    /**
+     * Is the pointer on the playhead: its handle at the top, or the line where it crosses empty space? (Over a clip
+     * a press still selects or moves the clip — clicking a clip puts the playhead right there.)
+     */
+    onPlayhead(pt, hit) {
+      if (!this.p || !Pr.duration(this.p)) return false;
+      const dx = Math.abs(pt.vx - (this.tx(app.player.t) - this.scroller.scrollLeft));
+      if (pt.vy <= PH_HANDLE_H + 3 && dx <= PH_HANDLE_W / 2 + 2) return true;
+      return dx <= 4 && !!hit && (hit.kind === 'empty' || hit.kind === 'well');
+    },
+    /** Drag the playhead to scrub through the movie. */
+    startPlayheadDrag(e, pt) {
+      const pl = app.player;
+      if (pl.isPlaying()) pl.pause();
+      pl.setSkim(null);
+      const grabOff = pt.x - this.tx(pl.t); // no jump: the line keeps its offset from the pointer
+      const d = { kind: 'playhead' };
+      this.drag = d;
+      this.canvas.style.cursor = 'ew-resize';
+      let last = null;
+      const seekFrom = (ev) => {
+        const q = this.toContent(ev);
+        const dur = Pr.duration(this.p);
+        const t = clamp(this.snapTime(this.xt(q.x - grabOff), 6), 0, Math.max(0, dur - 1 / Pr.fps(this.p)));
+        pl.seek(Pr.snap(this.p, t));
+        this.updateTime();
+        this.redraw();
+      };
+      const onScroll = () => { if (last) seekFrom(last); };
+      this.scroller.addEventListener('scroll', onScroll);
+      IM.drag(e, (dx, dy, ev) => {
+        last = ev;
+        seekFrom(ev);
+        this.autoScrollDuring(ev);
+      }, () => {
+        this.scroller.removeEventListener('scroll', onScroll);
+        this.stopAutoScroll();
+        this.drag = null;
+        this.snapX = null;
+        this.updateCursor();
+        this.redraw();
+      }, { threshold: 0 });
+      this.redraw();
     },
     startMarquee(e, pt) {
       const d = { kind: 'marquee', x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y };
@@ -1187,7 +1246,8 @@
         }
         d.mode = 'reorder';
         d.ghostDy = G.primY - ghost0.y;  // the storyline may have moved down for a reserved lane
-        const idx = this.insertIndexAt(q.x - (d.grabX - ghost0.x) + (ghost0.w / 2), d.ids);
+        // the gap opens where the pointer is (as in iMovie), wherever the clip was grabbed
+        const idx = this.insertIndexAt(q.x, d.ids);
         d.insertIndex = idx;
         const gapW = d.ghosts.reduce((s, gi) => s + gi.w + GAP * 2, 0);
         this.gapTargets(d.ids, idx, gapW);
