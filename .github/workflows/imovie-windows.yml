@@ -1,0 +1,129 @@
+# iMovie for Windows: builds the installer, installs it on Windows and edits and shares a movie with it, then
+# publishes it as the release "imovie-windows", so the download link never changes:
+#   https://github.com/<owner>/<repo>/releases/download/imovie-windows/iMovie-Setup.exe
+name: iMovie for Windows
+
+on:
+  push:
+    branches: [claude/confident-dijkstra-ts5e93]
+    paths: ['imovie/**', 'desktop/**', '.github/workflows/imovie-windows.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: imovie-windows
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the installer
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install NSIS
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nsis
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: Build the app
+        run: npm run dist:win
+      - name: Build the installer
+        run: npm run installer:win
+      - id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - run: mv "dist/iMovie-Setup-${{ steps.version.outputs.version }}.exe" dist/iMovie-Setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iMovie-Setup
+          path: desktop/dist/iMovie-Setup.exe
+          if-no-files-found: error
+          compression-level: 0
+
+  test:
+    name: Install it and make a movie on Windows
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: desktop/test
+      - uses: actions/download-artifact@v4
+        with:
+          name: iMovie-Setup
+          path: setup
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install iMovie
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath setup\iMovie-Setup.exe -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "the installer failed ($($p.ExitCode))" }
+          $exe = "$env:LOCALAPPDATA\Programs\iMovie\iMovie.exe"
+          if (-not (Test-Path $exe)) { throw 'iMovie.exe was not installed' }
+          if (-not (Test-Path ([Environment]::GetFolderPath('Desktop') + '\iMovie.lnk'))) { throw 'no desktop shortcut' }
+          $v = (Get-Item $exe).VersionInfo
+          "installed $($v.ProductName) $($v.FileVersion) at $exe"
+      - name: Open iMovie, edit and share a movie
+        shell: pwsh
+        working-directory: desktop/test
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: |
+          npm install --no-audit --no-fund
+          node smoke.js "$env:LOCALAPPDATA\Programs\iMovie\iMovie.exe"
+      - name: Uninstall
+        shell: pwsh
+        run: |
+          $exe = "$env:LOCALAPPDATA\Programs\iMovie\iMovie.exe"
+          Start-Process -FilePath "$env:LOCALAPPDATA\Programs\iMovie\Uninstall iMovie.exe" -ArgumentList '/S' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path $exe); $i++) { Start-Sleep 1 }
+          if (Test-Path $exe) { throw 'the uninstaller left iMovie.exe behind' }
+          'uninstalled'
+
+  publish:
+    name: Publish the download
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: iMovie-Setup
+      - name: Update the imovie-windows release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          TAG=imovie-windows
+          TITLE="iMovie for Windows $VERSION"
+          NOTES="Download **iMovie-Setup.exe** below and open it. It installs iMovie (no administrator needed) with shortcuts on the desktop and in the Start menu. Installing a newer version over an older one keeps your projects and media.
+
+          Built from $GITHUB_SHA."
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$GH_REPO/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --latest
+            # upload beside the old file, then swap them, so the download link keeps working throughout
+            cp iMovie-Setup.exe iMovie-Setup-new.exe
+            gh release upload "$TAG" iMovie-Setup-new.exe --clobber
+            ASSETS=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.assets[] | "\(.id) \(.name)"')
+            OLD=$(echo "$ASSETS" | awk '$2 == "iMovie-Setup.exe" { print $1 }')
+            NEW=$(echo "$ASSETS" | awk '$2 == "iMovie-Setup-new.exe" { print $1 }')
+            if [ -n "$OLD" ]; then gh api -X DELETE "repos/$GH_REPO/releases/assets/$OLD"; fi
+            gh api -X PATCH "repos/$GH_REPO/releases/assets/$NEW" -f name=iMovie-Setup.exe > /dev/null
+          else
+            gh release create "$TAG" iMovie-Setup.exe --target "$GITHUB_SHA" --title "$TITLE" --notes "$NOTES" --latest
+          fi
+          echo "Download: https://github.com/$GH_REPO/releases/download/$TAG/iMovie-Setup.exe"

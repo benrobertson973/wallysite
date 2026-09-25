@@ -1,0 +1,8 @@
+{
+  "name": "imovie-desktop-smoke-test",
+  "private": true,
+  "description": "Smoke test for a built iMovie desktop app: npm install && node smoke.js <iMovie executable>",
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

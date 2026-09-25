@@ -5,7 +5,8 @@
  * Windows handles Win+<key> itself before any app sees it, so the only way in is a low-level keyboard hook. It is
  * installed only while the iMovie window is focused; it swallows Win+<key> and hands the page Ctrl+<key>, which is
  * the app's ⌘ on Windows. The Windows key on its own still opens Start. Win+L (lock), Win+D, Win+Tab, Win+arrows,
- * Win+. / Win+; (emoji) and Win+Shift+S (screenshot) are left to Windows.
+ * Win+. / Win+; (emoji) and Win+Shift+S (screenshot) are left to Windows. Win+ + and Win+ − make iMovie bigger or
+ * smaller instead of opening Magnifier.
  */
 'use strict';
 const koffi = require('koffi');
@@ -18,7 +19,10 @@ const SHIFT = new Set([0x10, 0xa0, 0xa1]), ALT = new Set([0x12, 0xa4, 0xa5]);
 const VK_MASK = 0xe8;          // an unassigned key: tapping it keeps Start from opening when the Windows key is released
 const KEYEVENTF_KEYUP = 0x2;
 
-const PUNCT = { 0xbb: '=', 0xbd: '-', 0xbc: ',', 0xbf: '/', 0xdc: '\\', 0xdb: '[', 0xdd: ']', 0xde: "'", 0xc0: '`', 0x08: 'Backspace', 0x2e: 'Delete' };
+const PUNCT = {
+  0xbb: '=', 0xbd: '-', 0xbc: ',', 0xbf: '/', 0xdc: '\\', 0xdb: '[', 0xdd: ']', 0xde: "'", 0xc0: '`', 0x08: 'Backspace', 0x2e: 'Delete',
+  0x6b: 'numadd', 0x6d: 'numsub', 0x60: 'num0',
+};
 /** Accelerator key name for a virtual-key code the app may use with ⌘, or null to leave the key to Windows. */
 function keyName(vk, shift) {
   if (vk >= 0x41 && vk <= 0x5a) {
@@ -104,6 +108,7 @@ function attach(win) {
   win.on('blur', remove);
   win.on('closed', () => { remove(); koffi.unregister(cb); });
   if (win.isFocused()) install();
+  return { active: () => !!hook };
 }
 
 module.exports = { attach, keyName };

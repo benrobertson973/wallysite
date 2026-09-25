@@ -1,7 +1,7 @@
 {
   "name": "imovie-desktop",
   "productName": "iMovie",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "iMovie for Windows and Mac: the iMovie web app in its own window",
   "main": "main.js",
   "private": true,
@@ -9,6 +9,7 @@
     "prepare-web": "node scripts/prepare-web.js",
     "start": "npm run prepare-web && electron .",
     "dist:win": "npm run prepare-web && electron-builder --win --x64",
+    "installer:win": "node scripts/make-installer.js",
     "dist:mac": "npm run prepare-web && electron-builder --mac",
     "dist:linux-dir": "npm run prepare-web && electron-builder --linux dir"
   },
@@ -25,24 +26,13 @@
     "productName": "iMovie",
     "copyright": "iMovie for the web",
     "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "winkeys.js", "package.json", "web/**/*", "build/icon.png"],
+    "files": ["main.js", "preload.js", "winkeys.js", "package.json", "web/**/*", "build/icon.png"],
     "asarUnpack": ["node_modules/koffi/**/*"],
     "afterPack": "scripts/after-pack.js",
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [{ "target": "dir", "arch": ["x64"] }],
       "icon": "build/icon.ico",
       "signAndEditExecutable": false
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "createDesktopShortcut": "always",
-      "createStartMenuShortcut": true,
-      "shortcutName": "iMovie",
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
-      "runAfterFinish": true,
-      "artifactName": "iMovie-Setup-${version}.exe"
     },
     "mac": { "target": ["dmg"], "category": "public.app-category.video", "icon": "build/icon.png" },
     "linux": { "target": ["dir"], "icon": "build/icon.png" }
