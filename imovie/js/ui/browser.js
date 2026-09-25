@@ -117,6 +117,8 @@
       this.body.addEventListener('dragover', (e) => { e.preventDefault(); });
     },
     resize() {
+      // measure with the canvas out of the way: at its old size it can overflow the new space and bring up a scrollbar
+      this.canvas.style.width = this.canvas.style.height = '0px';
       const w = this.scroller.clientWidth, hh = this.scroller.clientHeight;
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       this.W = w; this.H = hh; this.dpr = dpr;
@@ -233,10 +235,9 @@
     // ------------------------------------------------------------------ drawing
     draw() {
       const ctx = this.ctx;
-      if (!this.W) return;
       const vis = app.view === 'media' || (app.view === 'editor' && app.tab === 'media');
       this.el.classList.toggle('hidden', !vis);
-      if (!vis) return;
+      if (!vis || !this.W) return; // shown again: its ResizeObserver sizes the canvas and draws
       const dpr = this.dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = '#1e1e1e';
@@ -244,6 +245,12 @@
       const LY = this.L = this.layout();
       this.titleEl.textContent = this.title || '';
       this.sizer.style.height = LY.height + 'px';
+      // a new scroll height can bring up or remove the scrollbar: fit the canvas to the space left
+      if (!this._refit && (this.scroller.clientWidth !== this.W || this.scroller.clientHeight !== this.H)) {
+        this._refit = true;
+        try { this.resize(); } finally { this._refit = false; }
+        return;
+      }
       const st = this.scroller.scrollTop;
       // empty state
       const empty = !LY.segs.length;

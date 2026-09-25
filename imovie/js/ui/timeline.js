@@ -162,6 +162,8 @@
     get pps() { return this.p ? (this.p.settings.zoom || 40) : 40; },
     set pps(v) { if (this.p) this.p.settings.zoom = clamp(v, 1.5, 800); },
     resize() {
+      // measure with the canvas out of the way: at its old size it can overflow the new space and bring up scrollbars
+      this.canvas.style.width = this.canvas.style.height = '0px';
       const w = this.scroller.clientWidth, hh = this.scroller.clientHeight;
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       this.W = w; this.H = hh; this.dpr = dpr;
@@ -303,6 +305,12 @@
       const G = this.G = this.geom();
       this.sizer.style.width = Math.ceil(G.contentW) + 'px';
       this.sizer.style.height = Math.ceil(G.contentH + WELL_H) + 'px';
+      // a new scroll extent can bring up or remove scrollbars: fit the canvas to the space left
+      if (!this._refit && (this.scroller.clientWidth !== this.W || this.scroller.clientHeight !== this.H)) {
+        this._refit = true;
+        try { this.resize(); } finally { this._refit = false; }
+        return;
+      }
       const sl = this.scroller.scrollLeft, st = this.scroller.scrollTop;
       this.viewL = sl; this.viewR = sl + this.W;
       const trackH = this.H - WELL_H;
