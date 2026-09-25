@@ -36,18 +36,29 @@ uniform float u_sat;
 uniform float u_temp;
 uniform float u_opacity;
 uniform float u_amount;
+uniform vec4 u_stab;   // stabilization: offset (frame heights), angle, zoom (0 = off)
+uniform vec4 u_rs;     // rolling shutter: velocity (frame heights / frame), strength, texture aspect
+uniform vec2 u_rsDir;  // direction in which sensor rows were exposed later
 vec2 rotUV(vec2 p) {
   if (u_rot > 2.5) return vec2(1.0 - p.y, p.x);
   if (u_rot > 1.5) return vec2(1.0 - p.x, 1.0 - p.y);
   if (u_rot > 0.5) return vec2(p.y, 1.0 - p.x);
   return p;
 }
+vec2 stabUV(vec2 s) {
+  if (u_stab.w <= 0.0) return s;
+  float asp = u_rs.w;
+  vec2 x = vec2((s.x - 0.5) * asp, s.y - 0.5);
+  float cs = cos(u_stab.z), sn = sin(u_stab.z);
+  vec2 q = vec2(cs * x.x - sn * x.y, sn * x.x + cs * x.y) / u_stab.w + u_stab.xy;
+  q += u_rs.xy * (u_rs.z * dot(q, u_rsDir));
+  return clamp(vec2(q.x / asp + 0.5, q.y + 0.5), 0.0, 1.0);
+}
 vec4 srcRaw(vec2 uv) {
   vec2 p = u_rect.xy + uv * u_rect.zw;
   if (p.x < 0.0 || p.y < 0.0 || p.x > 1.0 || p.y > 1.0) return vec4(0.0);
-  vec2 s = rotUV(p);
-  if (u_flip > 0.5) s.x = 1.0 - s.x;
-  return texture2D(u_tex, s);
+  if (u_flip > 0.5) p.x = 1.0 - p.x;
+  return texture2D(u_tex, stabUV(rotUV(p)));
 }
 vec3 src(vec2 uv) { vec4 c = srcRaw(uv); return c.a > 0.001 ? c.rgb / c.a : vec3(0.0); }
 vec3 adjust(vec3 c) {

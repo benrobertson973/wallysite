@@ -491,6 +491,7 @@
       this.media.delete(id);
       if (item.url) URL.revokeObjectURL(item.url);
       await Promise.all([IM.DB.del('media', id), IM.DB.del('blobs', id), IM.DB.del('thumbs', id), IM.DB.del('peaks', id)]);
+      if (IM.stabilizer && item) IM.stabilizer.forget(id, item.duration);
       if (!silent) this.emit('changed');
     }
     usageCount(id) {

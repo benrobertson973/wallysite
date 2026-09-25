@@ -27,7 +27,8 @@
       this.panel = h('div.adj-panel.hidden');
       this.canvas = h('canvas.viewer-canvas');
       this.overlay = h('div.viewer-overlay');
-      this.stage = h('div.viewer-stage', this.canvas, this.overlay);
+      this.status = h('div.viewer-status.hidden', 'Analyzing for stabilization…');
+      this.stage = h('div.viewer-stage', this.canvas, this.overlay, this.status);
       this.playBtn = h('button.tp-btn.play', { 'data-tip': 'Play (Space)', on: { click: () => IM.run('play') } }, IM.icon('play', 18));
       const back = h('button.tp-btn', { 'data-tip': 'Go to previous clip', on: { click: () => IM.run('prevEdit') } }, IM.icon('back-end', 15));
       const fwd = h('button.tp-btn', { 'data-tip': 'Go to next clip', on: { click: () => IM.run('nextEdit') } }, IM.icon('forward-end', 15));
@@ -45,8 +46,9 @@
       app.player.on('levels', (lv) => this.updateMeters(lv));
       IM.bus.on('selection', () => this.onSelection());
       IM.bus.on('bselection', () => this.onSelection());
-      IM.bus.on('project-changed', () => { this.buildBar(); if (this.tool) this.buildPanel(); this.syncOverlay(); });
+      IM.bus.on('project-changed', () => { this.buildBar(); if (this.tool && !(IM.inspector && IM.inspector.live)) this.buildPanel(); this.syncOverlay(); });
       IM.bus.on('project-live', () => this.syncOverlay());
+      IM.bus.on('stab-progress', (st) => this.status.classList.toggle('hidden', !st.active));
       IM.bus.on('view', () => { this.closeTool(); this.buildBar(); });
       IM.bus.on('meters', () => this.showMeters());
       app.player.on('time', () => { if (this.tool === 'crop' || this.editingTitle) this.syncOverlay(); });

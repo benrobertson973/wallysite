@@ -36,6 +36,11 @@
         this.onFrame && this.onFrame(el);
       });
       el.addEventListener('loadeddata', () => { el._stamp++; this.onFrame && this.onFrame(el); });
+      if (this.kind === 'video' && el.requestVideoFrameCallback) {
+        // timestamp of the frame actually on screen (used to look up per-frame stabilization)
+        const onVF = (now, meta) => { el._frameTs = meta.mediaTime; el.requestVideoFrameCallback(onVF); };
+        el.requestVideoFrameCallback(onVF);
+      }
       const rec = { el, mediaId: null, key: null, lastUsed: 0 };
       this.recs.push(rec);
       if (this.audio) this.audio.attach(el);
@@ -56,6 +61,7 @@
         rec.el.pause();
         rec.el.src = m.url || '';
         rec.el._stamp++;
+        rec.el._frameTs = null;
         rec.mediaId = m.id;
         rec.el._pendingSeek = null;
       }
@@ -120,6 +126,7 @@
         image: (it, m) => (m.image ? { src: m.image, key: 'img:' + m.id, w: m.width, h: m.height, stamp: 1 } : null),
       };
       this._loop = this._loop.bind(this);
+      IM.bus.on('stab-ready', () => this.invalidate());
     }
     setRenderer(r) { this.renderer = r; this.invalidate(); }
     setProject(p) {
@@ -479,7 +486,8 @@
       const playingLive = this.playing && this.rate > 0 && !el.paused && it.type !== 'freeze' && !it.reverse;
       if (!playingLive) seekEl(el, srcTime);
       if (el.readyState < 2 || !el.videoWidth) return null;
-      return { src: el, key: 'v' + el._id, w: el.videoWidth, h: el.videoHeight, stamp: playingLive ? null : el._stamp + ':' + el.currentTime.toFixed(4) };
+      const ts = el._frameTs != null && Math.abs(el._frameTs - el.currentTime) < 0.25 ? el._frameTs : el.currentTime;
+      return { src: el, key: 'v' + el._id, w: el.videoWidth, h: el.videoHeight, stamp: playingLive ? null : el._stamp + ':' + el.currentTime.toFixed(4), ts };
     }
 
     _sourceSpec() {

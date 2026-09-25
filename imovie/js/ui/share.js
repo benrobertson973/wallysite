@@ -19,7 +19,7 @@
     const c = h('canvas', { width: 380, height: 214 });
     try {
       const t = Pr.posterFrameTime(p);
-      IM.renderThumb(IM.Compose.frame(p, t, IM.stillProvider, {}), c);
+      IM.renderThumb(IM.Compose.frame(p, t, IM.stillProvider, { noStabRequest: true }), c);
     } catch (e) { /* ignore */ }
     return c;
   }

@@ -129,9 +129,9 @@
       window.addEventListener('blur', () => { this.rKey = false; });
 
       new ResizeObserver(() => this.resize()).observe(this.body);
-      IM.bus.on('project-changed', () => { this.redraw(); this.updateEmpty(); });
-      IM.bus.on('project-live', () => this.redraw());
-      IM.bus.on('project-opened', () => { this.dx.clear(); this.dxTarget.clear(); this.range = null; this.fitInitial(); this.updateEmpty(); this.redraw(); });
+      IM.bus.on('project-changed', () => { this.redraw(); this.updateEmpty(); this.updateTime(); });
+      IM.bus.on('project-live', () => { this.redraw(); this.updateTime(); });
+      IM.bus.on('project-opened', () => { this.dx.clear(); this.dxTarget.clear(); this.range = null; this.fitInitial(); this.updateEmpty(); this.updateTime(); this.redraw(); });
       IM.bus.on('selection', () => this.redraw());
       IM.bus.on('prefs', () => this.redraw());
       IM.lib.on('thumbs', () => this.redraw());

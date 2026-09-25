@@ -150,7 +150,7 @@
     video(it) {
       const f = this.frames.get(it.id);
       if (!f) return null;
-      return { src: f.frame || f.canvas, key: 'x:' + it.id, w: f.w, h: f.h, stamp: f.stamp, metaRot: f.rot || 0 };
+      return { src: f.frame || f.canvas, key: 'x:' + it.id, w: f.w, h: f.h, stamp: f.stamp, metaRot: f.rot || 0, ts: f.ts };
     }
     image(it, m) { return m.image ? { src: m.image, key: 'img:' + m.id, w: m.width, h: m.height, stamp: 1 } : null; }
     clear(keepFreeze) {
@@ -175,6 +175,7 @@
       a: it.srcIn, b: it.srcOut, sp: it.speed || 1, rv: !!it.reverse, ft: it.type === 'freeze' ? it.frameTime : null,
       v: it.video, ov: it.overlay || null, ti: it.title || null, bgc: it.bg || null,
     };
+    if (IM.stabilizer && IM.stabilizer.needs(it.video)) o.stv = IM.stabilizer.VERSION;
     if (m) o.mf = [m.size, m.duration, m.width, m.height, m.fps, m.created];
     return o;
   }
@@ -410,6 +411,14 @@
         if (e.item.type !== 'video' && e.item.type !== 'freeze') continue;
         await this.server(IM.lib.get(e.item.mediaId)).open();
       }
+      // stabilization analysis (stored per media; computed now if missing)
+      for (const e of visualEntries(L)) {
+        const it = e.item;
+        if ((it.type !== 'video' && it.type !== 'freeze') || !IM.stabilizer || !IM.stabilizer.needs(it.video)) continue;
+        try { await IM.stabilizer.ensure(it); } catch (err) {
+          throw new RenderError(`Stabilization couldn’t be analyzed for “${(IM.lib.get(it.mediaId) || {}).name || 'a clip'}”.`, err);
+        }
+      }
     },
     /**
      * Render frames [sF, eF) of project p. For each frame calls onFrame(f, canvas) after drawing.
@@ -454,7 +463,7 @@
               provider.set(rd.e.item.id, await rd.reader.next());
             }
           }
-          const spec = IM.Compose.frame(p, f / fps, provider, {});
+          const spec = IM.Compose.frame(p, f / fps, provider, { strict: true });
           assertComplete(spec, f, fps);
           r.render(spec);
           await onFrame(f, r.canvas);
@@ -891,10 +900,13 @@
         const frames = Array.from(picks).filter((f) => f >= 0).sort((a, b) => a - b);
         const small = document.createElement('canvas'); small.width = 96; small.height = 54;
         const sctx = small.getContext('2d', { willReadFrequently: true });
+        const dec = document.createElement('canvas'); dec.width = 96; dec.height = 54;
+        const gctx = dec.getContext('2d', { willReadFrequently: true });
         for (const f of frames) {
           const got = await sink.getCanvas((f + 0.5) / fmt.fps);
           if (!got) { res.ok = false; res.checks.push(`frame ${f} missing`); continue; }
-          const gctx = got.canvas.getContext('2d', { willReadFrequently: true });
+          gctx.clearRect(0, 0, 96, 54);
+          gctx.drawImage(got.canvas, 0, 0, 96, 54);
           const a = gctx.getImageData(0, 0, 96, 54).data;
           // render the expected frame and its neighbours: the decoded frame must match frame f best
           const lo = Math.max(0, f - 1), hi = Math.min(L.durationF, f + 2);

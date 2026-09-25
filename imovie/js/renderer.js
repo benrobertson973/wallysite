@@ -75,7 +75,14 @@
       if (!src) return Object.assign(base, { kind: 'pending' });
       const rect = Pr.cropRectAt(it, m, local, e.dur);
       const rot = ((((v.rotate || 0) + (src.metaRot || 0)) / 90) | 0) % 4;
-      return Object.assign(base, { kind: 'media', src, rect, rot, flip: filter === 'flipped' });
+      let stab = null;
+      if (it.type !== 'image' && IM.stabilizer && IM.stabilizer.needs(v)) {
+        // correction for the frame actually drawn (its own timestamp), identical in viewer and export
+        const ts = src.ts != null ? src.ts : Pr.sampleTime(it, local, m);
+        stab = IM.stabilizer.forFrame(it, m, ts, src.metaRot || 0, src.w / src.h, opts && opts.noStabRequest);
+        if (!stab && opts && opts.strict) return Object.assign(base, { kind: 'pending', why: 'stabilization' });
+      }
+      return Object.assign(base, { kind: 'media', src, rect, rot, flip: filter === 'flipped', stab });
     },
   };
   IM.Compose = Compose;
@@ -206,7 +213,7 @@
     }
     _swapAcc() { const t = this.fb.acc; this.fb.acc = this.fb.acc2; this.fb.acc2 = t; }
 
-    clipUniforms(v, rect, rot, flip, outside, time) {
+    clipUniforms(v, rect, rot, flip, outside, time, stab) {
       v = v || IM.Project.defaultVideo();
       const c = v.color || {};
       const b = v.balance || {};
@@ -217,6 +224,7 @@
         u_gains: gains, u_levels: [c.shadows || 0, c.bright || 0, c.highlights || 0],
         u_contrast: c.contrast || 0, u_sat: c.sat == null ? 1 : c.sat, u_temp: c.temp || 0,
         u_opacity: 1, u_amount: 1, u_time: time || 0, u_res: [this.W, this.H],
+        u_stab: stab ? stab.s : [0, 0, 0, 0], u_rs: stab ? stab.rs : [0, 0, 0, 1], u_rsDir: stab ? stab.dir : [0, 1],
       };
     }
     /** Render a layer spec full-frame into target fbo. primary: black outside the picture. */
@@ -228,7 +236,7 @@
       }
       if (L.kind === 'media') {
         const tex = this.textureFor(L.src);
-        const u = this.clipUniforms(L.video, L.rect, L.rot, L.flip, primary, L.time);
+        const u = this.clipUniforms(L.video, L.rect, L.rot, L.flip, primary, L.time, L.stab);
         g.draw(this.clipProg(L.filter), target, u, { u_tex: tex });
         return;
       }

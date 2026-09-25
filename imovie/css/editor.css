@@ -162,6 +162,8 @@
 .viewer-pane.fs { position: fixed; inset: 0; z-index: 8500; width: auto !important; background: #000; }
 .viewer-pane.fs .adj-bar, .viewer-pane.fs .adj-panel { display: none; }
 .viewer-pane.fs .viewer-stage { background: #000; }
+.viewer-status { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); padding: 3px 10px; border-radius: 10px; background: rgba(30,30,30,.82); color: #d8d8d8; font-size: 11px; pointer-events: none; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+.viewer-status.hidden { display: none; }
 .viewer-pane.fs .transport { position: absolute; left: 50%; bottom: 30px; transform: translateX(-50%); width: 300px; border-radius: 12px; background: rgba(30, 30, 30, 0.8); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); border: none; opacity: 0; transition: opacity .3s; }
 .viewer-pane.fs:hover .transport { opacity: 1; }
 

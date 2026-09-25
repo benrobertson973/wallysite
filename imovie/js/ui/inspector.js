@@ -8,10 +8,20 @@
 
   /** Undoable live update of the selected item(s). */
   function upd(ids, label, fn, coalesce) {
-    IM.edit(label, (p) => {
-      for (const id of ids) { const f = Pr.findItem(p, id); if (f) fn(f.item, f, p); }
-    }, coalesce ? { coalesce: coalesce + ids.join(',') } : undefined);
+    // continuous (slider) edits must not rebuild the panel under the pointer
+    if (coalesce) Inspector.live = true;
+    try {
+      IM.edit(label, (p) => {
+        for (const id of ids) { const f = Pr.findItem(p, id); if (f) fn(f.item, f, p); }
+      }, coalesce ? { coalesce: coalesce + ids.join(',') } : undefined);
+    } finally { Inspector.live = false; }
   }
+  // stabilization analysis in progress (survives panel rebuilds)
+  const stabJob = { n: 0, key: '', text: '' };
+  const setStabText = (key, text) => {
+    if (stabJob.key === key) stabJob.text = text;
+    document.querySelectorAll('.stab-status').forEach((el) => { if (el.dataset.key === key) el.textContent = text; });
+  };
   const selIds = () => app.sel.ids.slice();
   const grp = (...kids) => h('div.grp', ...kids);
   const lbl = (t) => h('label', t);
@@ -187,19 +197,55 @@
       const it = cur.item;
       const ids = selIds();
       const v = it.video;
-      const st = h('span', { style: { color: '#9a9a9a' } });
-      const amt = IM.slider({ min: 0, max: 1, step: 0.01, value: v.stabilize || 0.5, width: 110, onInput: (x) => upd(ids, 'Stabilization', (y) => { y.video.stabilize = x; }, 'stab') });
+      const S = IM.stabilizer;
+      const key = ids.join(',');
+      const st = h('span.stab-status', { style: { color: '#9a9a9a', minWidth: '110px' } }, stabJob.key === key ? stabJob.text : '');
+      st.dataset.key = key;
+      const items = () => ids.map((id) => Pr.findItem(app.project, id)).filter(Boolean).map((f) => f.item).filter((x) => x.type === 'video');
+      // analyze every selected clip, then apply `fn` as one undoable edit (unless the user changed their mind)
+      const withAnalysis = (label, fn, revert) => {
+        const my = ++stabJob.n;
+        stabJob.key = key;
+        const list = items();
+        if (list.every((x) => S.ready(x))) { setStabText(key, ''); upd(ids, label, fn); return; }
+        setStabText(key, 'Analyzing…');
+        (async () => {
+          for (let i = 0; i < list.length; i++) {
+            await S.analyze(list[i], (f) => { if (my === stabJob.n) setStabText(key, 'Analyzing… ' + Math.round(((i + f) / list.length) * 100) + '%'); });
+          }
+        })().then(() => {
+          if (my !== stabJob.n) return;
+          setStabText(key, '');
+          upd(ids, label, fn);
+        }, (e) => {
+          console.warn(e);
+          if (my !== stabJob.n) return;
+          setStabText(key, 'Couldn’t analyze this clip');
+          if (revert) revert();
+        });
+      };
+      const cancel = () => { stabJob.n++; setStabText(key, ''); };
+      const amt = IM.slider({ min: 0.05, max: 1, step: 0.01, value: v.stabilize || 0.5, width: 110, onInput: (x) => { if (v.stabilize) upd(ids, 'Stabilization', (y) => { y.video.stabilize = x; }, 'stab'); } });
       amt.disabled = !v.stabilize;
+      amt.setAttribute('data-tip', 'Amount of stabilization');
       const cb = IM.checkbox('Stabilize Shaky Video', !!v.stabilize, (on) => {
         amt.disabled = !on;
-        if (on) {
-          st.textContent = 'Analyzing…';
-          IM.stabilizer && IM.stabilizer.analyze(it).then(() => { st.textContent = ''; upd(ids, 'Stabilize', (y) => { y.video.stabilize = parseFloat(amt.value) || 0.5; }); }).catch((e) => { st.textContent = 'Analysis failed'; console.warn(e); });
-          if (!IM.stabilizer) upd(ids, 'Stabilize', (y) => { y.video.stabilize = parseFloat(amt.value) || 0.5; });
-        } else upd(ids, 'Stabilize', (y) => { y.video.stabilize = 0; });
+        if (on) withAnalysis('Stabilize', (y) => { y.video.stabilize = parseFloat(amt.value) || 0.5; }, () => { cb.querySelector('input').checked = false; amt.disabled = true; });
+        else { cancel(); upd(ids, 'Stabilize', (y) => { y.video.stabilize = 0; }); }
       });
-      const rs = IM.checkbox('Fix Rolling Shutter', !!v.rollingShutter, (on) => upd(ids, 'Rolling Shutter', (y) => { y.video.rollingShutter = on; }));
-      panel.append(grp(cb, amt, st), grp(rs));
+      const levels = [{ label: 'Low', value: 'low' }, { label: 'Medium', value: 'medium' }, { label: 'High', value: 'high' }, { label: 'Extra High', value: 'extra' }];
+      const curLevel = v.rollingShutter === true ? 'medium' : (v.rollingShutter || 'medium');
+      const rsOff = () => { rsCb.querySelector('input').checked = false; };
+      const pop = IM.popupButton(levels, curLevel, (lv) => {
+        if (v.rollingShutter) { upd(ids, 'Rolling Shutter', (y) => { y.video.rollingShutter = lv; }); return; }
+        rsCb.querySelector('input').checked = true;
+        withAnalysis('Fix Rolling Shutter', (y) => { y.video.rollingShutter = lv; }, rsOff);
+      }, { width: 104 });
+      const rsCb = IM.checkbox('Fix Rolling Shutter', !!v.rollingShutter, (on) => {
+        if (on) withAnalysis('Fix Rolling Shutter', (y) => { y.video.rollingShutter = pop.value || 'medium'; }, rsOff);
+        else { cancel(); upd(ids, 'Fix Rolling Shutter', (y) => { y.video.rollingShutter = false; }); }
+      });
+      panel.append(grp(cb, amt, st), grp(rsCb, pop));
     },
 
     // ------------------------------------------------------------------ volume
@@ -298,7 +344,7 @@
       const e = it ? Pr.layout(p).byId.get(it.id) : null;
       const t = e ? clamp(app.player.t, e.start, e.end - 0.01) : app.player.t;
       const baseSpec = () => {
-        if (projectWide || !it) return IM.Compose.frame(p, app.player.t, IM.stillProvider, {});
+        if (projectWide || !it) return IM.Compose.frame(p, app.player.t, IM.stillProvider, { noStabRequest: true });
         const layer = IM.Compose.layer(e, t, IM.stillProvider, true, {});
         return { base: layer, overlays: [], titles: [], time: t };
       };

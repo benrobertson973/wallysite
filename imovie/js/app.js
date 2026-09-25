@@ -228,7 +228,7 @@
       const r = IM.thumbRenderer && IM.thumbRenderer();
       if (!r || !p.clips.length) { p.poster = null; return; }
       const t = IM.Project.posterFrameTime(p);
-      const spec = IM.Compose.frame(p, t, IM.stillProvider, {});
+      const spec = IM.Compose.frame(p, t, IM.stillProvider, { noStabRequest: true });
       r.render(spec);
       const c = document.createElement('canvas');
       c.width = 320; c.height = 180;
