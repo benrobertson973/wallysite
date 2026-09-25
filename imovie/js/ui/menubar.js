@@ -73,7 +73,8 @@
         I('Play', 'play', 'space'), I('Play Selection', 'playSelection', '/'), I('Play from Beginning', 'playFromBeginning', '\\'),
         I('Play Full Screen', 'playFullScreen', 'shift+cmd+f'), I('Loop Playback', 'loop', 'cmd+l'), SEP,
         I('Snapping', 'snapping', 'n'), I('Skimming', 'skimming', 's'), I('Audio Skimming', 'audioSkimming', 'shift+s'), SEP,
-        I('Zoom In', 'zoomIn', 'cmd+='), I('Zoom Out', 'zoomOut', 'cmd+-'), I('Zoom to Fit', 'zoomFit', 'shift+z'), SEP,
+        I('Zoom In', 'zoomIn', 'alt+='), I('Zoom Out', 'zoomOut', 'alt+-'), I('Zoom to Fit', 'zoomFit', 'shift+z'), SEP,
+        I('Make Everything Bigger', 'uiZoomIn', 'cmd+='), I('Make Everything Smaller', 'uiZoomOut', 'cmd+-'), I('Actual Size', 'uiZoomReset', 'cmd+0'), SEP,
         I('Enter Full Screen', 'enterFullScreen', 'ctrl+cmd+f'),
       ],
     },
@@ -223,7 +224,31 @@
       this._keymap = out;
       return out;
     },
+    /** 'in', 'out' or 'reset' when e asks to make the whole interface bigger or smaller: + and − with or without ⌘, and ⌘0 */
+    zoomKey(e) {
+      if (e.altKey || (IM.isMac && e.ctrlKey)) return null;
+      const cmdDown = IM.isMac ? e.metaKey : e.ctrlKey;
+      const t = e.target;
+      const textField = t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' ||
+        (t.tagName === 'INPUT' && !/^(range|checkbox|radio|button|submit|reset|color|file)$/i.test(t.type)));
+      if (!cmdDown && textField) return null;
+      const k = e.key, c = e.code;
+      if (k === '+' || k === '=' || c === 'NumpadAdd') return 'in';
+      if (k === '-' || k === '_' || k === '\u2212' || c === 'NumpadSubtract') return 'out';
+      if (cmdDown && (k === '0' || c === 'Digit0' || c === 'Numpad0')) return 'reset';
+      return null;
+    },
     onKey(e) {
+      const zoom = this.zoomKey(e);
+      if (zoom) {
+        const cmdDown = IM.isMac ? e.metaKey : e.ctrlKey;
+        if (cmdDown && !IM.desktop) return; // a browser's own ⌘+ / ⌘− zoom the page
+        e.preventDefault();
+        e.stopPropagation();
+        if (IM.Menu.isOpen()) this.close(); else if (cmdDown) this.flash('uiZoomIn');
+        IM.uiZoom(zoom);
+        return;
+      }
       if (IM.Menu.isOpen()) return;
       if (IM.hasSheet()) return;
       const typing = IM.isTyping(e);

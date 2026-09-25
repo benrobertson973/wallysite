@@ -26,7 +26,9 @@ without H.264 encoding export VP9/WebM automatically.
   back), ripple trimming with limit feedback, range selection (hold **R**), volume line with
   percentages, gray fade handles, yellow/red clipping peaks, turtle/rabbit speed slider,
   transitions that overlap clips, split / join / detach audio / freeze frame, Clip Trimmer
-  (⌘\\) and Precision Editor (⌘/), snapping, skimming, zoom.
+  (⌘\\) and Precision Editor (⌘/), snapping, skimming, zoom (⌥= / ⌥-, pinch, ⌘-scroll).
+- **Interface size**: in the desktop app, + and − (or ⌘+ / ⌘−) make everything bigger or smaller and
+  the size is remembered; in a browser, use the browser's own ⌘+ / ⌘− (Ctrl on Windows).
 - **Adjustments**: Enhance, color balance (auto, match color, white balance, skin tone), color
   correction, crop / Ken Burns / rotation, stabilization, volume and ducking, noise reduction
   and equalizer, speed (slow, fast, custom, reverse, preserve pitch, instant replay, rewind),

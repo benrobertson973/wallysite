@@ -81,6 +81,16 @@
     // a pinch or ctrl+wheel anywhere else must not zoom the whole app (the timeline zooms itself)
     window.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
     document.addEventListener('gesturestart', (e) => e.preventDefault());
+    // making everything bigger or smaller changes devicePixelRatio: redraw the canvases at the new resolution
+    const watchDpr = () => {
+      matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', () => {
+        watchDpr();
+        IM.timelineUI.resize();
+        IM.browserUI.resize();
+        IM.viewerUI.layout();
+      }, { once: true });
+    };
+    watchDpr();
     window.addEventListener('beforeunload', () => { if (app.project) { app.project.playhead = app.player.t; IM.lib.saveProjectNow(app.project); } });
     document.addEventListener('visibilitychange', () => { if (document.hidden && app.project) IM.lib.saveProjectNow(app.project); });
     window.addEventListener('blur', () => IM.$('#window').classList.add('inactive'));

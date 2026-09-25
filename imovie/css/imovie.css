@@ -367,6 +367,16 @@ input[type=range].mac.neutral::-webkit-slider-runnable-track { background: rgba(
 .notification .n-actions { margin-left: auto; }
 @keyframes notifIn { from { transform: translateX(120%); } to { transform: none; } }
 
+/* ---------- interface size indicator ---------- */
+.zoom-hud {
+  position: fixed; left: 50%; top: 96px; transform: translateX(-50%); z-index: 9600; pointer-events: none;
+  background: rgba(50, 50, 52, 0.88); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px);
+  border-radius: 10px; padding: 8px 18px; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; color: #fff;
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.6), inset 0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 10px 30px rgba(0, 0, 0, 0.45);
+  transition: opacity .35s;
+}
+.zoom-hud.out { opacity: 0; }
+
 /* ---------- tooltips ---------- */
 .tooltip {
   position: fixed; z-index: 9900; pointer-events: none; font-size: 11px; color: #eee;

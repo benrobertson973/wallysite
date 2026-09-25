@@ -3,6 +3,8 @@
   'use strict';
 
   IM.isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  /** The desktop app's bridge (desktop/preload.js), or null in a browser. */
+  IM.desktop = window.imovieDesktop || null;
 
   // ---------- DOM helpers ----------
   IM.$ = (sel, root) => (root || document).querySelector(sel);

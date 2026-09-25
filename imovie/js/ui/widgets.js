@@ -367,6 +367,30 @@
     setTimeout(() => { n.style.transition = 'transform .35s ease, opacity .35s'; n.style.transform = 'translateX(120%)'; setTimeout(() => n.remove(), 400); }, opts.duration || 5000);
   };
 
+  // ---------- interface size ----------
+  // The desktop app scales the whole window like a browser's zoom and remembers the size. In a browser the page
+  // can't change its zoom, but the browser's own Ctrl + / Ctrl − (⌘ on a Mac) do the same.
+  let zoomHud = null, zoomHudTimer = 0, zoomHintAt = 0;
+  function showZoom(z) {
+    if (!zoomHud) zoomHud = h('div.zoom-hud');
+    zoomHud.textContent = Math.round(z * 100) + '%';
+    zoomHud.classList.remove('out');
+    document.body.appendChild(zoomHud);
+    clearTimeout(zoomHudTimer);
+    zoomHudTimer = setTimeout(() => zoomHud.classList.add('out'), 1000);
+  }
+  /** Make everything bigger ('in'), smaller ('out') or actual size ('reset'). */
+  IM.uiZoom = function (how) {
+    if (IM.desktop && IM.desktop.zoom) {
+      IM.desktop.zoom(how).then(showZoom, () => {});
+      return;
+    }
+    if (Date.now() - zoomHintAt < 7000) return;
+    zoomHintAt = Date.now();
+    const mod = IM.isMac ? '⌘' : 'Ctrl';
+    IM.notify('Make everything bigger or smaller', `In a browser, press ${mod} and + for bigger, ${mod} and − for smaller, ${mod} and 0 for actual size.`, { duration: 7000 });
+  };
+
   // ---------- tooltips ----------
   let tipTimer = null, tipEl = null, tipTarget = null;
   function hideTip() { clearTimeout(tipTimer); if (tipEl) { tipEl.remove(); tipEl = null; } tipTarget = null; }

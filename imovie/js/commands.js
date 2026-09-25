@@ -453,6 +453,10 @@
   def('zoomIn', { enabled: () => app.view !== 'projects', run: () => (app.focus === 'browser' && IM.browserUI ? IM.browserUI.zoom(1) : IM.timelineUI && IM.timelineUI.zoomBy(1.5)) });
   def('zoomOut', { enabled: () => app.view !== 'projects', run: () => (app.focus === 'browser' && IM.browserUI ? IM.browserUI.zoom(-1) : IM.timelineUI && IM.timelineUI.zoomBy(1 / 1.5)) });
   def('zoomFit', { enabled: inEditor, run: () => IM.timelineUI && IM.timelineUI.zoomToFit() });
+  // the whole interface: + and − make everything bigger or smaller (see IM.uiZoom)
+  def('uiZoomIn', { run: () => IM.uiZoom('in') });
+  def('uiZoomOut', { run: () => IM.uiZoom('out') });
+  def('uiZoomReset', { run: () => IM.uiZoom('reset') });
   def('meters', { checked: () => IM.prefs.meters, label: () => (IM.prefs.meters ? 'Hide Audio Meters' : 'Show Audio Meters'), run: () => { IM.prefs.meters = !IM.prefs.meters; IM.savePrefs(); IM.bus.emit('meters'); } });
   def('clipTrimmer', {
     enabled: () => inEditor() && (IM.clipTrimmer && (IM.clipTrimmer.isOpen() || selItems().some((f) => f.item.type === 'video' || f.item.type === 'audio'))),
