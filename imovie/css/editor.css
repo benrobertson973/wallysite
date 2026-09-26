@@ -142,8 +142,6 @@
 .adj-panel .grp { display: flex; align-items: center; gap: 8px; }
 .adj-panel label { color: #cdcdcd; white-space: nowrap; }
 .adj-panel .reset-link { margin-left: auto; }
-.adj-panel .apply-check { width: 26px; height: 26px; border-radius: 50%; border: none; background: transparent; color: var(--accent); padding: 0; display: inline-flex; }
-.adj-panel .apply-check .ic { color: var(--accent); }
 .adj-title { font-size: 11px; color: #9a9a9a; font-weight: 600; margin-right: 2px; }
 .viewer-stage { flex: 1; min-height: 60px; position: relative; background: #121212; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .viewer-canvas { display: block; background: #000; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6); }

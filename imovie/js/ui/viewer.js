@@ -78,6 +78,8 @@
       IM.clear(this.playBtn).appendChild(IM.icon(on ? 'pause' : 'play', 18));
       this.playBtn.setAttribute('data-tip', on ? 'Pause (Space)' : 'Play (Space)');
       if (on && this.editingTitle) this.stopTitleEdit();
+      // crops apply as they're made: playing shows the result instead of the crop frame
+      if (on && this.tool === 'crop') this.closeTool();
     },
     isFullscreen() { return this.el.classList.contains('fs'); },
     fullscreen(on, fromEvent) {
@@ -258,11 +260,28 @@
       const ov = this.overlay;
       if (this._overlayLock) return;
       const cur = this.current();
+      let kind = null;
+      if (cur && app.view === 'editor') {
+        if (this.tool === 'crop' && this.toolAvailable('crop')) kind = 'crop';
+        else if (this.tool === 'overlay' && cur.item.overlay && cur.item.overlay.mode === 'pip') kind = 'pip';
+        else if (this.editingTitle === cur.item.id) kind = 'title';
+      }
+      // title fields are updated in place, so typing keeps its focus and selection
+      if (kind === 'title') { this._overlaySig = null; this.titleOverlay(cur); return; }
+      this._titleEds = null;
+      // this runs after every frame the viewer draws: rebuild only when something the overlay shows has changed
+      const it = kind && cur.item;
+      const sig = kind && JSON.stringify([kind, it.id, kind === 'crop' ? [it.video.crop, it.video.rotate] : it.overlay,
+        ov.clientWidth, ov.clientHeight, this.visibleNow(it.id)]);
+      if (sig && sig === this._overlaySig) {
+        // the crop view shows the whole picture: keep it that way if anything else previewed in between
+        if (kind === 'crop') app.player.setPreview({ kind: 'cropEdit', id: it.id, mediaId: it.mediaId });
+        return;
+      }
+      this._overlaySig = sig;
       IM.clear(ov);
-      if (!cur || app.view !== 'editor') return;
-      if (this.tool === 'crop' && this.toolAvailable('crop')) { this.cropOverlay(cur); return; }
-      if (this.tool === 'overlay' && cur.item.overlay && cur.item.overlay.mode === 'pip') { this.pipOverlay(cur); return; }
-      if (this.editingTitle === cur.item.id) this.titleOverlay(cur);
+      if (kind === 'crop') this.cropOverlay(cur);
+      else if (kind === 'pip') this.pipOverlay(cur);
     },
     visibleNow(itemId) {
       const p = app.project;
@@ -281,12 +300,15 @@
       const t = app.player.t;
       if (t < e.start || t > e.end) app.player.seek(e.start + Math.min(e.dur / 2, IM.titleRestTime(e.item.title, e.dur)));
       this.editingTitle = id;
+      this._titleOpenedAt = performance.now();
       this.buildBar();
       this.syncOverlay();
-      setTimeout(() => { const ta = this.overlay.querySelector('.title-editor'); if (ta) { ta.focus(); ta.select(); } }, 30);
+      setTimeout(() => { const ta = this.overlay.querySelector('.title-editor'); if (ta && document.activeElement !== ta) { ta.focus(); ta.select(); } }, 30);
     },
     stopTitleEdit() {
       this.editingTitle = null;
+      this._titleEds = null;
+      this._overlaySig = null;
       app.player.setPreview(null);
       IM.clear(this.overlay);
     },
@@ -304,36 +326,60 @@
       const scale = this.overlay.clientWidth / W;
       const fields = st.fields || 2;
       app.player.setPreview({ kind: 'titleStatic', id: it.id, local: rest });
+      // the same title keeps its text fields (rebuilding them would lose the cursor while typing)
+      let eds = this._titleEds;
+      if (!eds || eds.id !== it.id || eds.fields.length !== fields || eds.fields.some((ta) => !ta.isConnected)) {
+        IM.clear(this.overlay);
+        eds = this._titleEds = { id: it.id, fields: [] };
+        for (let i = 0; i < fields; i++) {
+          const ta = this.titleField(it.id, i, !!(st.multiline && st.multiline[i]));
+          eds.fields.push(ta);
+          this.overlay.appendChild(ta);
+        }
+      }
       for (let i = 0; i < fields; i++) {
+        const ta = eds.fields[i];
         let b = boxes[i];
         if (!b) {
           // empty line: place below the previous one
           const prev = boxes[i - 1] || boxes[0];
-          if (!prev) continue;
+          if (!prev) { ta.style.display = 'none'; continue; }
           b = { x: prev.x, y: prev.y + prev.h * 1.4, w: Math.max(prev.w * 0.6, 120), h: prev.h * 0.7, align: prev.align, font: prev.font, cx: prev.cx };
         }
-        const multi = st.multiline && st.multiline[i];
-        const ta = h('textarea.title-editor', { spellcheck: false, rows: multi ? 6 : 1 });
-        ta.value = (it.title.text[i] || '').replace(/\t/g, '    ');
+        const multi = ta.rows > 1;
         const px = parseFloat((b.font || '40px').match(/(\d+(?:\.\d+)?)px/)[1]) * scale;
         Object.assign(ta.style, {
+          display: '',
           left: (b.x * scale - 6) + 'px', top: (b.y * scale - 4) + 'px', width: (Math.max(b.w, 60) * scale + 12) + 'px',
           height: (multi ? Math.min(this.overlay.clientHeight * 0.7, b.h * scale + 10) : (b.h * scale + 10)) + 'px',
           fontSize: px + 'px', lineHeight: multi ? '1.35' : (b.h * scale + 2) + 'px', textAlign: b.align === 'justify' ? 'left' : b.align,
         });
-        ta.addEventListener('input', () => {
-          const v = multi ? ta.value.replace(/ {4}/g, '\t') : ta.value.replace(/\n/g, ' ');
-          IM.edit('Edit Title', (p) => { const f = Pr.findItem(p, it.id); if (f) f.item.title.text[i] = v; }, { coalesce: 'title-text-' + it.id });
-        });
-        ta.addEventListener('keydown', (ev) => {
-          ev.stopPropagation();
-          if (ev.key === 'Escape') { ta.blur(); this.stopTitleEdit(); }
-          if (ev.key === 'Enter' && !multi) { ev.preventDefault(); const next = this.overlay.querySelectorAll('.title-editor')[i + 1]; if (next) next.focus(); else ta.blur(); }
-          if (ev.key === 'Tab') { ev.preventDefault(); const all = this.overlay.querySelectorAll('.title-editor'); const n = all[(i + (ev.shiftKey ? -1 : 1) + all.length) % all.length]; if (n) n.focus(); }
-        });
-        ta.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-        this.overlay.appendChild(ta);
+        // show changes made elsewhere (undo, another field), but never overwrite the field being typed in
+        const text = (it.title.text[i] || '').replace(/\t/g, '    ');
+        if (document.activeElement !== ta && ta.value !== text) ta.value = text;
       }
+    },
+    /** One line (or block) of a title's text, edited in place over the viewer. */
+    titleField(id, i, multi) {
+      const ta = h('textarea.title-editor', { spellcheck: false, rows: multi ? 6 : 1 });
+      ta.addEventListener('input', () => {
+        const v = multi ? ta.value.replace(/ {4}/g, '\t') : ta.value.replace(/\n/g, ' ');
+        IM.edit('Edit Title', (p) => { const f = Pr.findItem(p, id); if (f) f.item.title.text[i] = v; }, { coalesce: 'title-text-' + id });
+      });
+      ta.addEventListener('keydown', (ev) => {
+        ev.stopPropagation();
+        const all = () => this.overlay.querySelectorAll('.title-editor');
+        if (ev.key === 'Escape') { ta.blur(); this.stopTitleEdit(); }
+        if (ev.key === 'Enter' && !multi) { ev.preventDefault(); const next = all()[i + 1]; if (next && next.style.display !== 'none') next.focus(); else ta.blur(); }
+        if (ev.key === 'Tab') { ev.preventDefault(); const a = all(); const n = a[(i + (ev.shiftKey ? -1 : 1) + a.length) % a.length]; if (n) n.focus(); }
+      });
+      ta.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+      // double-clicking a title opens it with its text selected, ready to type over; later double-clicks select a word
+      ta.addEventListener('dblclick', (ev) => {
+        ev.stopPropagation();
+        if (performance.now() - (this._titleOpenedAt || 0) < 800) ta.select();
+      });
+      return ta;
     },
     onStageDown(e) {
       if (e.target !== this.canvas && e.target !== this.stage && e.target !== this.overlay) return;
@@ -347,7 +393,19 @@
       if (this.pickMode) { this.pickColor(e); return; }
       void cur;
     },
-    onStageDbl() { if (app.view === 'editor') IM.run('play'); },
+    onStageDbl(e) {
+      if (app.view !== 'editor') return;
+      // double-click a title to edit it (the first click has usually opened it already); anywhere else plays
+      const hit = app.project && this.titleAtPoint(e);
+      if (hit) {
+        if (this.editingTitle !== hit) { IM.select([hit]); this.editTitle(hit); }
+        const ta = this.overlay.querySelector('.title-editor');
+        if (ta) { ta.focus(); ta.select(); }
+        return;
+      }
+      if (this.editingTitle) return;
+      IM.run('play');
+    },
     titleAtPoint(e) {
       const p = app.project;
       if (!p || p.kind === 'trailer') return null;
@@ -381,7 +439,7 @@
       pm.cb([d[0] / 255, d[1] / 255, d[2] / 255]);
     },
     // --- crop / ken burns ---
-    exitCropPreview() { app.player.setPreview(null); },
+    exitCropPreview() { this._overlaySig = null; app.player.setPreview(null); },
     cropOverlay(cur) {
       const it = cur.item;
       const m = IM.lib.get(it.mediaId);

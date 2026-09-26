@@ -188,8 +188,9 @@
         grp(h('span.adj-title', 'Style:'), seg('fit', 'Fit'), seg('fill', 'Crop to Fill'), seg('kenburns', 'Ken Burns')),
         grp(h('button.adj-btn', { 'data-tip': 'Rotate counterclockwise', on: { click: () => rot(-90) } }, IM.icon('rotate-left', 16)),
           h('button.adj-btn', { 'data-tip': 'Rotate clockwise', on: { click: () => rot(90) } }, IM.icon('rotate-right', 16))),
-        h('button.apply-check', { 'data-tip': 'Apply crop adjustment', style: { marginLeft: 'auto' }, on: { click: () => viewer.closeTool() } }, IM.icon('check-circle', 24)));
-      void m;
+        // no Apply button: every change is saved as it's made, and playing or clicking the timeline shows the result
+        h('span.crop-note', { style: { marginLeft: 'auto', color: '#9a9a9a' } }, 'Applied automatically'));
+      void m; void viewer;
     },
 
     // ------------------------------------------------------------------ stabilization

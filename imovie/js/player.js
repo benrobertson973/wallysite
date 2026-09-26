@@ -182,7 +182,12 @@
       this.invalidate();
     }
     clearSource() { if (this.sourcePlay) return; this.source = null; this.invalidate(); }
-    setPreview(pv) { this.preview = pv; this.invalidate(); }
+    setPreview(pv) {
+      // the viewer re-applies its preview after every render: only a real change needs a new frame
+      if (JSON.stringify(pv || null) === JSON.stringify(this.preview || null)) return;
+      this.preview = pv;
+      this.invalidate();
+    }
 
     play(opts) {
       opts = opts || {};

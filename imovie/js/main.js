@@ -55,7 +55,11 @@
     IM.bus.on('layout', () => requestAnimationFrame(applySizes));
     // focus tracking between browser and timeline
     upper.addEventListener('pointerdown', (e) => { if (e.target.closest('.browser-pane') || e.target.closest('.sidebar')) app.focus = 'browser'; }, true);
-    lower.addEventListener('pointerdown', () => { app.focus = 'timeline'; }, true);
+    lower.addEventListener('pointerdown', () => {
+      app.focus = 'timeline';
+      // back to the timeline: a crop being made is already saved, so show the result
+      if (IM.viewerUI.tool === 'crop') IM.viewerUI.closeTool();
+    }, true);
     return ed;
   }
 

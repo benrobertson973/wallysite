@@ -441,6 +441,7 @@
   def('escape', {
     run: () => {
       if (IM.viewerUI && IM.viewerUI.isFullscreen()) { IM.viewerUI.fullscreen(false); return; }
+      if (IM.viewerUI && IM.viewerUI.tool === 'crop') { IM.viewerUI.closeTool(); return; }
       if (P().isPlaying()) { P().pause(); return; }
       if (IM.timelineUI && IM.timelineUI.range) { IM.timelineUI.clearRange(); return; }
     },
