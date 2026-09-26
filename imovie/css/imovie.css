@@ -367,6 +367,9 @@ input[type=range].mac.neutral::-webkit-slider-runnable-track { background: rgba(
 .notification .n-actions { margin-left: auto; }
 @keyframes notifIn { from { transform: translateX(120%); } to { transform: none; } }
 
+.tb-share-progress { gap: 6px; }
+.tb-eta { font-size: 11px; color: #c8c8c8; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
 /* ---------- interface size indicator ---------- */
 .zoom-hud {
   position: fixed; left: 50%; top: 96px; transform: translateX(-50%); z-index: 9600; pointer-events: none;

@@ -28,7 +28,7 @@
       IM.bus.on('view', () => this.render());
       IM.bus.on('tab', () => this.updateTabs());
       IM.bus.on('project-changed', () => this.updateTitle());
-      IM.bus.on('export-progress', (p) => { this.setProgress(p); this.layoutTitle(); });
+      IM.bus.on('export-progress', (p, job) => { this.setProgress(p, job); this.layoutTitle(); });
       if (window.ResizeObserver) new ResizeObserver(() => this.layoutTitle()).observe(this.el);
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => this.layoutTitle());
       else window.addEventListener('resize', () => this.layoutTitle());
@@ -118,16 +118,21 @@
         this.progressWrap.appendChild(el);
       }
       el.innerHTML = svg;
-      el.setAttribute('data-tip', `Background rendering: ${st.done} of ${st.total} sections ready`);
+      el.setAttribute('data-tip', `Getting your movie ready to share, in the background: ${st.done} of ${st.total} sections done`);
     },
-    setProgress(p) {
+    setProgress(p, job) {
       if (!this.progressWrap) return;
       IM.clear(this.progressWrap);
       this.bgEl = null;
       if (p == null || p >= 1) return;
       const r = 8, c = 2 * Math.PI * r;
       const svg = `<svg class="tb-progress" viewBox="0 0 22 22"><circle cx="11" cy="11" r="${r}" fill="none" stroke="rgba(255,255,255,.18)" stroke-width="2.5"/><circle cx="11" cy="11" r="${r}" fill="none" stroke="#0a84ff" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - p)}" transform="rotate(-90 11 11)"/></svg>`;
-      const b = h('button.tb-btn', { html: svg, 'data-tip': 'Sharing: ' + Math.round(p * 100) + '%', on: { click: (e) => IM.share.progressPopover(e.currentTarget) } });
+      const eta = job && job.eta != null ? IM.share.etaText(job.eta) : '';
+      const tip = 'Sharing: ' + Math.round(p * 100) + '%' + (eta ? ' — ' + eta : '');
+      const b = h('button.tb-btn.tb-share-progress', { 'data-tip': tip, on: { click: (e) => IM.share.progressPopover(e.currentTarget) } });
+      b.innerHTML = svg;
+      // minutes left, right next to the ring
+      if (eta) b.appendChild(h('span.tb-eta', IM.share.etaText(job.eta, true)));
       this.progressWrap.appendChild(b);
     },
   };

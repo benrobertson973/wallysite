@@ -1176,7 +1176,13 @@
       const state = { cancelled: false };
       this.running = state;
       BG.pause(true);
-      const progress = (f, label) => { if (o.onProgress) o.onProgress(clamp(f, 0, 1), label); };
+      // a second pass (fixing sections, or the software encoder) says so, and fixing continues the bar instead of restarting it
+      const from = o.progressFrom || 0;
+      let shown = from;
+      const progress = (f, label) => {
+        shown = clamp(from + (1 - from) * f, 0, 1);
+        if (o.onProgress) o.onProgress(shown, o.stageLabel && label !== 'Done' ? o.stageLabel : label);
+      };
       let output = null, writable = null;
       try {
         await Engine.prepare(p);
@@ -1212,6 +1218,7 @@
         await output.start();
         const totalFrames = L.durationF;
         let framesDone = 0, reused = 0, rendered = 0;
+        const reusedKeys = new Set();
         let firstPacket = true;
         const addPackets = async (seg, data) => {
           const base = seg.sF / fmt.fps;
@@ -1228,7 +1235,7 @@
             data = await Cache.get(seg.key);
             if (data && refConfig && !configsCompatible(data.config, refConfig)) data = null;
             if (data && data.frames !== seg.eF - seg.sF) data = null;
-            if (data) reused += seg.eF - seg.sF;
+            if (data) { reused += seg.eF - seg.sF; reusedKeys.add(seg.key); }
           }
           if (!data) {
             // every section starts from a fresh encoder (as background sections do), so a cached section is
@@ -1256,13 +1263,16 @@
         if (useHandle) blob = await o.fileHandle.getFile();
         else blob = new Blob([output.target.buffer], { type: mime });
         // ---- verification ----
-        progress(0.95, 'Verifying…');
-        const ver = await Verifier.verify(blob, p, fmt, segs);
+        progress(0.95, 'Checking…');
+        const ver = await Verifier.verify(blob, p, fmt, segs, (f) => progress(0.95 + 0.04 * f, 'Checking…'));
         if (!ver.ok && !o.retried) {
-          console.warn('Export verification failed; re-rendering affected segments', ver);
-          for (const k of ver.badKeys) await Cache.remove(k);
-          this.running = null;
-          return this.export(p, Object.assign({}, o, { retried: true, noCache: ver.badKeys.length === 0 }));
+          console.warn('Export verification failed', ver);
+          const again = this.retryPlan(ver, reusedKeys, o, shown);
+          if (again) {
+            for (const k of again.remove || []) await Cache.remove(k);
+            this.running = null;
+            return this.export(p, Object.assign({}, o, { retried: true }, again.opts));
+          }
         }
         progress(1, 'Done');
         return { blob, mime, ext, usedHandle: useHandle, verified: ver.ok, verification: ver, stats: { frames: totalFrames, reused, rendered, fmt } };
@@ -1274,13 +1284,30 @@
         if (e instanceof RenderError && e.detail && e.detail.encoder && !o.software && !state.cancelled) {
           console.warn('The video encoder failed; sharing again with the software encoder', e);
           this.running = null;
-          return this.export(p, Object.assign({}, o, { software: true }));
+          return this.export(p, Object.assign({}, o, { software: true, stageLabel: 'Rendering with the software encoder…' }));
         }
         throw e;
       } finally {
         this.running = null;
         BG.pause(false);
       }
+    },
+    /**
+     * What to do when the finished movie doesn't check out. Sections that came from background rendering are
+     * rendered again (just those: everything else is cached by now). A movie that's wrong as a whole (frame count,
+     * length, undecodable frames) or has damaged frames from this encoder is made once more with the software encoder.
+     * A suspected one-frame shift in freshly made sections is a guess, not worth rendering the whole movie twice.
+     */
+    retryPlan(ver, reusedKeys, o, shown) {
+      const bad = Array.from(new Set(ver.badKeys));
+      if (!ver.global && bad.length && bad.every((k) => reusedKeys.has(k))) {
+        const n = bad.length;
+        return { remove: bad, opts: { progressFrom: shown, stageLabel: `Fixing ${n} section${n > 1 ? 's' : ''}…` } };
+      }
+      if (o.software) return null;
+      const damaged = (ver.checks || []).some((c) => c && typeof c === 'object' && c.mismatch);
+      if (ver.global || damaged) return { remove: bad.filter((k) => reusedKeys.has(k)), opts: { software: true, stageLabel: 'Rendering again with the software encoder…' } };
+      return null;
     },
     cancel() { if (this.running) this.running.cancelled = true; },
     async exportAudioOnly(p, o, mb, progress, state) {
@@ -1356,28 +1383,32 @@
 
   // ------------------------------------------------------------------ verification
   const Verifier = {
-    async verify(blob, p, fmt, segs) {
-      const res = { ok: true, checks: [], badKeys: [] };
+    /**
+     * Decode the finished movie and check it against the project: every frame there, playing for the right length,
+     * and sampled frames showing the right picture at the right time. res.global marks problems with the movie as
+     * a whole; res.badKeys are the sections holding wrong frames.
+     */
+    async verify(blob, p, fmt, segs, onProgress) {
+      const res = { ok: true, global: false, checks: [], badKeys: [] };
       try {
         const mb = await IM.loadMediabunny();
         const input = new mb.Input({ source: new mb.BlobSource(blob), formats: mb.ALL_FORMATS });
         const vt = await input.getPrimaryVideoTrack();
-        if (!vt) return { ok: false, checks: ['no video track'], badKeys: [] };
+        if (!vt) return { ok: false, global: true, checks: ['no video track'], badKeys: [] };
         const L = Pr.layout(p);
         const stats = await vt.computePacketStats();
         res.frames = stats.packetCount;
-        if (stats.packetCount !== L.durationF) { res.ok = false; res.checks.push(`frame count ${stats.packetCount} ≠ ${L.durationF}`); }
+        if (stats.packetCount !== L.durationF) { res.ok = false; res.global = true; res.checks.push(`frame count ${stats.packetCount} ≠ ${L.durationF}`); }
         // and it must play for as long as the movie (frame times right, not squeezed or stretched)
         const vdur = await vt.computeDuration();
         res.videoDuration = vdur;
         if (Math.abs(vdur - L.durationF / fmt.fps) > 1.5 / fmt.fps) {
-          res.ok = false;
+          res.ok = false; res.global = true;
           res.checks.push(`video lasts ${vdur.toFixed(3)} s ≠ ${(L.durationF / fmt.fps).toFixed(3)} s`);
           res.badKeys = segs.map((s) => s.key);
         }
         if (!(await vt.canDecode())) { res.checks.push('decode check skipped (codec not decodable here)'); return res; }
         const sink = new mb.CanvasSink(vt, { width: 96, height: 54, fit: 'fill', poolSize: 2 });
-        // choose frames: first & last frame + middle of up to 8 segments
         // first/last frame of the movie, plus the boundaries (where sections are spliced) and middle of sections
         const picks = new Set([0, L.durationF - 1]);
         const step = Math.max(1, Math.floor(segs.length / 10));
@@ -1390,9 +1421,11 @@
         const sctx = small.getContext('2d', { willReadFrequently: true });
         const dec = document.createElement('canvas'); dec.width = 96; dec.height = 54;
         const gctx = dec.getContext('2d', { willReadFrequently: true });
+        let checked = 0;
         for (const f of frames) {
+          const seg = segs.find((s) => f >= s.sF && f < s.eF);
           const got = await sink.getCanvas((f + 0.5) / fmt.fps);
-          if (!got) { res.ok = false; res.checks.push(`frame ${f} missing`); continue; }
+          if (!got) { res.ok = false; res.global = true; res.checks.push(`frame ${f} missing`); if (seg) res.badKeys.push(seg.key); continue; }
           gctx.clearRect(0, 0, 96, 54);
           gctx.drawImage(got.canvas, 0, 0, 96, 54);
           const a = gctx.getImageData(0, 0, 96, 54).data;
@@ -1403,24 +1436,26 @@
             sctx.drawImage(canvas, 0, 0, 96, 54);
             exp.set(ff, sctx.getImageData(0, 0, 96, 54).data);
           });
-          const psnr = psnrOf(a, exp.get(f));
+          const m = matchOf(a, exp.get(f));
           // Off by one: a neighbour matches clearly better. Only telling when the neighbour itself looks different
           // (in a slow pan adjacent frames differ by less than the encoder's own noise, and a lean encoder may
           // barely update the motion from one frame to the next).
           let offByOne = false;
-          for (const [ff, d] of exp) if (ff !== f && psnr < 40 && psnrOf(exp.get(f), d) < 35 && psnrOf(a, d) > psnr + 1.5) offByOne = true;
-          res.checks.push({ frame: f, psnr: Math.round(psnr * 10) / 10, offByOne });
-          if (psnr < 24 || offByOne) {
+          for (const [ff, d] of exp) if (ff !== f && m.psnr < 40 && matchOf(exp.get(f), d).psnr < 35 && matchOf(a, d).psnr > m.psnr + 1.5) offByOne = true;
+          const mismatch = m.psnr < 24;
+          res.checks.push({ frame: f, psnr: Math.round(m.psnr * 10) / 10, raw: Math.round(m.raw * 10) / 10, shift: Math.round(m.shift * 100) / 100, offByOne, mismatch });
+          if (mismatch || offByOne) {
             res.ok = false;
-            const seg = segs.find((s) => f >= s.sF && f < s.eF);
             if (seg) res.badKeys.push(seg.key);
           }
+          if (onProgress) onProgress(++checked / frames.length);
         }
         if (input.dispose) input.dispose();
       } catch (e) {
         console.warn('verification error', e);
         res.checks.push('verification error: ' + e.message);
       }
+      res.badKeys = Array.from(new Set(res.badKeys));
       return res;
     },
   };
@@ -1431,6 +1466,75 @@
     }
     const mse = se / Math.max(1, n);
     return mse < 1e-6 ? 99 : 10 * Math.log10(255 * 255 / mse);
+  }
+  /**
+   * How closely picture a (decoded, RGBA bytes) matches picture b (expected), in dB. Encoders and decoders may shift
+   * all colours a little (video vs full range, BT.601 vs BT.709 colours, hardware encoders especially): the best
+   * colour mapping from b to a is taken out first, as long as it stays that small, so only a different or damaged
+   * picture scores low. { psnr, raw: plain PSNR, shift: how far the mapping is from none }
+   */
+  function matchOf(a, b) {
+    const raw = psnrOf(a, b);
+    const n = a.length / 4;
+    // least squares a_c ≈ m_c · [b_r, b_g, b_b, 1], pulled gently towards "no change" so flat pictures stay well-posed
+    const S = new Float64Array(16), T = [new Float64Array(4), new Float64Array(4), new Float64Array(4)];
+    const x = new Float64Array(4); x[3] = 1;
+    for (let i = 0; i < a.length; i += 4) {
+      x[0] = b[i] / 255; x[1] = b[i + 1] / 255; x[2] = b[i + 2] / 255;
+      for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) S[r * 4 + c] += x[r] * x[c];
+      for (let ch = 0; ch < 3; ch++) { const y = a[i + ch] / 255; for (let r = 0; r < 4; r++) T[ch][r] += x[r] * y; }
+    }
+    const lam = 1e-3 * n;
+    const M = [];
+    let shift = 0;
+    for (let ch = 0; ch < 3; ch++) {
+      const A = [], v = [];
+      for (let r = 0; r < 4; r++) {
+        A.push(Array.from(S.subarray(r * 4, r * 4 + 4)));
+        A[r][r] += lam;
+        v.push(T[ch][r] + lam * (r === ch ? 1 : 0));
+      }
+      const mc = solve4(A, v);
+      if (!mc) return { psnr: raw, raw, shift: 1 };
+      M.push(mc);
+      for (let r = 0; r < 4; r++) shift = Math.max(shift, Math.abs(mc[r] - (r === ch ? 1 : 0)));
+    }
+    // a bigger "shift" isn't a colour quirk any more (a black or washed-out frame would fit perfectly): judge it as is
+    if (shift > 0.3) return { psnr: raw, raw, shift };
+    let se = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      const r = b[i] / 255, g = b[i + 1] / 255, bb = b[i + 2] / 255;
+      for (let ch = 0; ch < 3; ch++) {
+        const mc = M[ch];
+        const d = a[i + ch] / 255 - (mc[0] * r + mc[1] * g + mc[2] * bb + mc[3]);
+        se += d * d;
+      }
+    }
+    const mse = se / Math.max(1, n * 3);
+    const psnr = mse < 1e-12 ? 99 : 10 * Math.log10(1 / mse);
+    return { psnr: Math.max(psnr, raw), raw, shift };
+  }
+  /** Solve the 4×4 system A·x = v (Gaussian elimination with partial pivoting); null if singular. */
+  function solve4(A, v) {
+    const n = 4;
+    for (let c = 0; c < n; c++) {
+      let piv = c;
+      for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+      if (Math.abs(A[piv][c]) < 1e-12) return null;
+      if (piv !== c) { const t = A[c]; A[c] = A[piv]; A[piv] = t; const tv = v[c]; v[c] = v[piv]; v[piv] = tv; }
+      for (let r = c + 1; r < n; r++) {
+        const k = A[r][c] / A[c][c];
+        for (let q = c; q < n; q++) A[r][q] -= k * A[c][q];
+        v[r] -= k * v[c];
+      }
+    }
+    const out = new Array(n);
+    for (let r = n - 1; r >= 0; r--) {
+      let acc = v[r];
+      for (let q = r + 1; q < n; q++) acc -= A[r][q] * out[q];
+      out[r] = acc / A[r][r];
+    }
+    return out;
   }
   IM.Verifier = Verifier;
 
@@ -1461,7 +1565,8 @@
       this.run().catch((e) => { if (!(e instanceof AbortRender)) console.warn('background render stopped', e); }).finally(() => { this.active = false; this.status.rendering = false; this.emit(); });
     },
     async format(p) {
-      const o = Object.assign({ resolution: 1080, quality: 'high' }, IM.prefs.shareFile || {});
+      // it has to pick one size before anyone shares: 1080p, at the quality last used for a File share
+      const o = { resolution: 1080, quality: (IM.prefs.shareFile && IM.prefs.shareFile.quality) || 'high' };
       const key = [Pr.fps(p), o.resolution, o.quality].join(':');
       if (!this.fmt || this.fmtKey !== key) { this.fmt = await resolveFormat(p, o); this.fmtKey = key; }
       return this.fmt;

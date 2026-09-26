@@ -23,6 +23,16 @@
     } catch (e) { /* ignore */ }
     return c;
   }
+  const PREF_KEY = { file: 'shareFile', email: 'shareEmail', youtube: 'shareYouTube' };
+  /** 'About 3 minutes left' (or a short form for the toolbar: '3 min left'). */
+  function etaText(secs, short) {
+    if (secs == null || !isFinite(secs)) return '';
+    if (secs < 50) return short ? '<1 min left' : 'Less than a minute left';
+    const min = Math.max(1, Math.round(secs / 60));
+    if (short) return min < 90 ? min + ' min left' : Math.floor(min / 60) + ' hr ' + (min % 60) + ' min left';
+    if (min >= 90) return `About ${Math.floor(min / 60)} hr ${min % 60} min left`;
+    return 'About ' + min + (min === 1 ? ' minute left' : ' minutes left');
+  }
   function safeName(n) { return String(n || 'My Movie').replace(/[\\/:*?"<>|]+/g, '-').trim() || 'My Movie'; }
 
   const Share = {
@@ -48,8 +58,10 @@
       if (this.job) { IM.alert({ title: 'A share is already in progress', message: 'Wait for the current share to finish, or cancel it first.' }); return; }
       if (kind === 'image') { this.shareImage(); return; }
       const L = Pr.layout(p);
-      const prefs = Object.assign({ resolution: 1080, quality: 'high', format: 'av', compress: 'better' }, IM.prefs.shareFile || {});
-      if (kind === 'email') { prefs.resolution = 540; prefs.quality = 'medium'; }
+      // each kind of share remembers its own settings (an Email share mustn't turn the next File share into 540p)
+      const prefKey = PREF_KEY[kind] || 'shareFile';
+      const defaults = kind === 'email' ? { resolution: 540, quality: 'medium' } : { resolution: 1080, quality: 'high' };
+      const prefs = Object.assign({ format: 'av', compress: 'better' }, defaults, IM.prefs[prefKey] || {});
       const title = h('input.text-field', { type: 'text', value: p.name });
       const desc = h('input.text-field', { type: 'text', placeholder: 'Description' });
       const tags = h('input.text-field', { type: 'text', placeholder: 'Tags' });
@@ -72,7 +84,7 @@
       const next = h('button.btn.primary', {
         on: {
           click: async () => {
-            IM.prefs.shareFile = { resolution: state.resolution, quality: state.quality, format: state.format, compress: state.compress };
+            IM.prefs[prefKey] = { resolution: state.resolution, quality: state.quality, format: state.format, compress: state.compress };
             IM.savePrefs();
             sheet.close();
             await this.start(kind, Object.assign({}, state, { title: title.value.trim() || p.name }));
@@ -119,13 +131,19 @@
         }
       }
       // exporting to a picked file handle requires the container to match what the encoder can produce
-      this.job = { name, progress: 0, label: 'Preparing…', kind, started: performance.now() };
-      IM.bus.emit('export-progress', 0.001);
+      this.job = { name, progress: 0, label: 'Preparing…', kind, started: performance.now(), eta: null };
+      IM.bus.emit('export-progress', 0.001, this.job);
       try {
         const res = await IM.Exporter.export(p, {
           resolution: o.resolution, quality: o.quality, audioOnly: o.format === 'audio',
           fileHandle: handle && /\.(mp4|mov)$/i.test(name) && o.format !== 'audio' ? handle : null,
-          onProgress: (f, label) => { this.job.progress = f; this.job.label = label; IM.bus.emit('export-progress', Math.max(0.001, f)); this.updateProgressPop(); },
+          onProgress: (f, label) => {
+            if (!this.job) return;
+            this.job.progress = f; this.job.label = label;
+            this.job.eta = this.estimate(f, label);
+            IM.bus.emit('export-progress', Math.max(0.001, f), this.job);
+            this.updateProgressPop();
+          },
         });
         const secs = (performance.now() - this.job.started) / 1000;
         this.job = null;
@@ -177,8 +195,27 @@
     updateProgressPop() {
       if (!this.bar || !this.job || !document.body.contains(this.bar)) return;
       this.bar.firstChild.style.width = Math.round(this.job.progress * 100) + '%';
-      this.pLabel.textContent = this.job.label + ' ' + Math.round(this.job.progress * 100) + '%';
+      const eta = etaText(this.job.eta);
+      this.pLabel.textContent = this.job.label + ' ' + Math.round(this.job.progress * 100) + '%' + (eta ? ' · ' + eta : '');
     },
+    /**
+     * Seconds left, from how fast the bar has moved since this pass began (a second pass — fixing sections, or the
+     * software encoder — starts its own clock). Null until there's enough to go on.
+     */
+    estimate(f, label) {
+      const j = this.job, now = performance.now();
+      const pass = /again|Fixing|software/.test(label) ? label : 'first';
+      if (!j.clock || j.clock.pass !== pass || f < j.clock.last - 1e-6) j.clock = { pass, t0: now, f0: f, last: f, eta: null };
+      const c = j.clock;
+      c.last = f;
+      const done = f - c.f0, secs = (now - c.t0) / 1000;
+      if (done < 0.02 || secs < 3) return c.eta;
+      const left = secs * (1 - f) / done;
+      // smooth the jumps (sections rendered in the background finish instantly)
+      c.eta = c.eta == null ? left : c.eta * 0.75 + left * 0.25;
+      return c.eta;
+    },
+    etaText,
     async shareImage() {
       const p = app.project;
       const t = app.player.t;
