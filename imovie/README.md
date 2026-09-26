@@ -29,15 +29,18 @@ without H.264 encoding export VP9/WebM automatically.
   (⌘\\) and Precision Editor (⌘/), snapping, skimming, zoom (⌥= / ⌥-, pinch, ⌘-scroll).
 - **Interface size**: in the desktop app, + and − (or ⌘+ / ⌘−) make everything bigger or smaller and
   the size is remembered; in a browser, use the browser's own ⌘+ / ⌘− (Ctrl on Windows).
-- **Adjustments**: Enhance, color balance (auto, match color, white balance, skin tone), color
-  correction, crop / Ken Burns / rotation, stabilization, volume and ducking, noise reduction
+- **Adjustments**: Enhance, color balance (auto, match color, white balance, skin tone, and
+  Incandescent Light, which measures how warm a clip's light was and takes the orange of light
+  bulbs out), color correction, crop / Ken Burns / rotation (applied as you make them: playing,
+  clicking the timeline or Esc shows the result), stabilization, volume and ducking, noise reduction
   and equalizer, speed (slow, fast, custom, reverse, preserve pitch, instant replay, rewind),
   38 clip filters, 12 audio effects, video overlays (cutaway, green/blue screen, split screen,
   picture in picture), clip information.
 - **Trailers**: 26 genre templates with Outline, Storyboard and Shot List; select a shot and
   click a clip in the browser to fill it. Animated studio logos, cards and credits, and a score
   generated to fit each trailer's cuts. Convert a trailer to a movie at any time.
-- **Titles** (40+ animated styles, edited directly in the viewer), **Backgrounds** (25),
+- **Titles** (40+ animated styles; click or double-click one in the viewer, or double-click it in the
+  timeline, and type), **Backgrounds** (25),
   **Transitions** (all 24 of iMovie's), **Themes**, **Soundtracks** and **Sound Effects**
   (synthesized), **Voiceover** recording.
 - **Share**: File (MP4 H.264/AAC, or VP9/WebM), Email, YouTube & Facebook, Image, Audio Only.

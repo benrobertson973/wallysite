@@ -510,4 +510,110 @@
     return { r: r / n / 255 + 1e-3, g: g / n / 255 + 1e-3, b: b / n / 255 + 1e-3, lo: ls[Math.floor(ls.length * 0.02)], hi: ls[Math.floor(ls.length * 0.98)] };
   }
   IM.frameStats = frameStats;
+
+  // ------------------------------------------------------------------ incandescent light
+  // Light bulbs are much warmer than daylight, so footage shot under them comes out orange. The fix measures how
+  // warm the light in a clip was and takes that warmth out along the warm–cool line of light colours only (never
+  // adding green or magenta), as colour-balance gains, so the viewer and every export show the same result.
+  const XYZ_TO_RGB = [[3.2406, -1.5372, -0.4986], [-0.9689, 1.8758, 0.0415], [0.0557, -0.2040, 1.0570]];
+  /** Linear sRGB colour of light at temperature T (kelvin, on the black-body line), scaled to green = 1. */
+  function lightColor(T) {
+    T = IM.clamp(T, 1667, 25000);
+    const x = T <= 4000 ? -0.2661239e9 / T ** 3 - 0.2343589e6 / T ** 2 + 0.8776956e3 / T + 0.179910
+      : -3.0258469e9 / T ** 3 + 2.1070379e6 / T ** 2 + 0.2226347e3 / T + 0.240390;
+    const y = T <= 2222 ? -1.1063814 * x ** 3 - 1.34811020 * x ** 2 + 2.18555832 * x - 0.20219683
+      : T <= 4000 ? -0.9549476 * x ** 3 - 1.37418593 * x ** 2 + 2.09137015 * x - 0.16748867
+        : 3.0817580 * x ** 3 - 5.87338670 * x ** 2 + 3.75112997 * x - 0.37001483;
+    const X = x / y, Z = (1 - x - y) / y;
+    const rgb = XYZ_TO_RGB.map((r) => r[0] * X + r[1] + r[2] * Z);
+    return rgb.map((v) => Math.max(1e-4, v) / rgb[1]);
+  }
+  const DAYLIGHT = 6500;
+  /**
+   * The colour temperature of the light a clip was shot in (kelvin), from frames across it: the average colour of
+   * its well-exposed pixels, placed on the warm–cool line. Null without pictures to measure.
+   */
+  function lightTemperature(m, it) {
+    const lin = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+    const times = [];
+    if (m.kind === 'image') times.push(0);
+    else if (it.type === 'freeze') times.push(it.frameTime || 0);
+    else for (let i = 0; i < 7; i++) times.push(it.srcIn + (it.srcOut - it.srcIn) * (i + 0.5) / 7);
+    const c = document.createElement('canvas'); c.width = 64; c.height = 36;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    const px = [];  // linear r, g, b, weight
+    for (const t of times) {
+      const th = IM.lib.thumbAt(m, t);
+      if (!th) continue;
+      ctx.drawImage(th.img, th.sx, th.sy, th.sw, th.sh, 0, 0, 64, 36);
+      const d = ctx.getImageData(0, 0, 64, 36).data;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+        // skip the murky and the blown-out (a clipped highlight turns white whatever the light)
+        if (Math.max(r, g, b) > 0.97 || 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.06) continue;
+        const lr = lin(r), lg = lin(g), lb = lin(b);
+        px.push(lr, lg, lb, 0.2126 * lr + 0.7152 * lg + 0.0722 * lb);
+      }
+    }
+    if (!px.length) return null;
+    // the temperature whose light has the blue-to-red balance of the chosen pixels
+    const qOf = (T) => { const k = lightColor(T); return Math.log(k[2] / k[0]); };
+    const fit = (keep) => {
+      let R = 0, B = 0, W = 0;
+      for (let i = 0; i < px.length; i += 4) if (keep(i)) { R += px[i] * px[i + 3]; B += px[i + 2] * px[i + 3]; W += px[i + 3]; }
+      if (W <= 0) return null;
+      const q = Math.log((B + 1e-6) / (R + 1e-6));
+      let lo = 1667, hi = 12000;
+      if (q <= qOf(lo)) return { T: lo, W };
+      if (q >= qOf(hi)) return { T: hi, W };
+      for (let k = 0; k < 40; k++) { const mid = (lo + hi) / 2; if (qOf(mid) < q) lo = mid; else hi = mid; }
+      return { T: (lo + hi) / 2, W };
+    };
+    // first guess: everything averages out to gray. Then again from just the grayest quarter of the picture under
+    // that light (walls, white or gray things), where the light's own colour shows: coloured things (skin, grass,
+    // sky) would otherwise pull the guess
+    const all = fit(() => true);
+    if (!all) return null;
+    let T = all.T;
+    const n = px.length / 4, order = new Array(n), dist = new Float64Array(n);
+    for (let round = 0; round < 5; round++) {
+      const k = lightColor(T);
+      for (let j = 0; j < n; j++) {
+        const i = j * 4;
+        const lr = Math.log((px[i] / k[0] + 1e-6) / (px[i + 1] + 1e-6)), lb = Math.log((px[i + 2] / k[2] + 1e-6) / (px[i + 1] + 1e-6));
+        dist[j] = lr * lr + lb * lb;
+        order[j] = j;
+      }
+      order.sort((a, b) => dist[a] - dist[b]);
+      const keep = new Uint8Array(n);
+      let w = 0;
+      for (const j of order) { keep[j] = 1; w += px[j * 4 + 3]; if (w >= all.W * 0.25) break; }
+      const next = fit((i) => keep[i / 4] === 1);
+      if (!next) break;
+      const done = Math.abs(next.T - T) < 10;
+      T = next.T;
+      if (done) break;
+    }
+    return Math.round(T);
+  }
+  /**
+   * Colour-balance gains (applied to the picture as encoded) that take light of temperature T towards daylight.
+   * amount 0–1: how much of the warmth to take out. Light that isn't warmer than daylight is left alone.
+   */
+  function warmLightGains(T, amount) {
+    // a clip measuring near daylight isn't bulb-lit (its contents are just warm): leave it, easing in below 5500 K
+    if (!T || T >= 5500) return [1, 1, 1];
+    const ease = IM.clamp((5500 - T) / 1000, 0, 1);
+    const from = 1e6 / T, day = 1e6 / DAYLIGHT;       // in mired, where equal steps look equally warmer
+    const target = 1e6 / (from + IM.clamp(amount, 0, 1) * ease * (day - from));
+    const src = lightColor(T), dst = lightColor(target);
+    let g = [dst[0] / src[0], 1, dst[2] / src[2]];
+    // things lit by the bulb keep their brightness
+    const Y = (k) => 0.2126 * k[0] + 0.7152 * k[1] + 0.0722 * k[2];
+    const keep = Y(src) / Y(src.map((v, i) => v * g[i]));
+    g = g.map((v) => v * keep);
+    return g.map((v) => IM.clamp(Math.pow(v, 1 / 2.2), 0.4, 2.5));
+  }
+  IM.lightTemperature = lightTemperature;
+  IM.warmLightGains = warmLightGains;
 })(window.IM = window.IM || {});

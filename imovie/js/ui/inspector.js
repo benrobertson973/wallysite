@@ -80,8 +80,17 @@
       const mode = IM.popupButton([
         { value: 'none', label: 'None' }, { value: 'auto', label: 'Auto' }, { value: 'match', label: 'Match Color…' },
         { value: 'wb', label: 'White Balance' }, { value: 'skin', label: 'Skin Tone Balance' },
+        { value: 'incandescent', label: 'Incandescent Light' },
       ], b.mode || 'none', (v) => {
         if (v === 'none') upd(ids, 'Color Balance', (x) => { x.video.balance = { mode: 'none', gains: [1, 1, 1] }; });
+        else if (v === 'incandescent') upd(ids, 'Fix Incandescent Light', (x) => {
+          // each clip is measured on its own: the light (and the camera's own correction) varies from shot to shot
+          const m = IM.lib.get(x.mediaId);
+          const light = m ? IM.lightTemperature(m, x) : null;
+          if (light == null) return;
+          const amount = 1;
+          x.video.balance = { mode: 'incandescent', light, amount, gains: IM.warmLightGains(light, amount) };
+        });
         else if (v === 'auto') upd(ids, 'Auto Color Balance', (x) => {
           const m = IM.lib.get(x.mediaId); const st = m ? IM.frameStats(m, x.type === 'freeze' ? x.frameTime : (x.srcIn + x.srcOut) / 2) : null;
           if (!st) return; const avg = (st.r + st.g + st.b) / 3;
@@ -124,6 +133,21 @@
         }
       }, { width: 150 });
       panel.append(grp(h('span.adj-title', 'Color Balance:'), mode), hint);
+      if (b.mode === 'incandescent') {
+        const val = h('span', pct(b.amount == null ? 1 : b.amount));
+        const amount = IM.slider({
+          min: 0, max: 1, step: 0.01, value: b.amount == null ? 1 : b.amount, width: 120,
+          onInput: (v) => {
+            val.textContent = pct(v);
+            upd(ids, 'Incandescent Amount', (x) => {
+              const bb = x.video.balance;
+              if (bb && bb.mode === 'incandescent') { bb.amount = v; bb.gains = IM.warmLightGains(bb.light, v); }
+            }, 'incandescent');
+          },
+        });
+        const note = b.light >= 5000 ? 'This clip’s light isn’t very warm, so there’s little to take out.' : 'Takes the orange of light bulbs out of the picture.';
+        panel.append(grp(lbl('Amount:'), amount, val), h('span', { style: { color: '#9a9a9a' } }, note));
+      }
     },
 
     // ------------------------------------------------------------------ color correction
