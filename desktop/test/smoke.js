@@ -97,17 +97,28 @@ const check = (ok, what) => {
     const z2 = await zoom();
     check(z1 > z0 && z2 === z0, `Ctrl + and Ctrl − change the interface size (${z0} → ${z1} → ${z2})`);
 
+    // a title typed straight into the viewer
+    await page.evaluate(() => { IM.app.player.seek(1); IM.run('tab:titles'); IM.contentUI.addTitleAtPlayhead('standard'); });
+    await page.waitForTimeout(800);
+    await page.keyboard.type('Hello Windows', { delay: 20 });
+    await page.waitForTimeout(300);
+    const titleText = await page.evaluate(() => { const e = IM.Project.layout(IM.app.project).connected.find((c) => c.item.type === 'title'); return e && e.item.title.text[0]; });
+    check(titleText === 'Hello Windows', `typing into a new title works ("${titleText}")`);
+    await page.keyboard.press('Escape');
+
     // share
     const res = await page.evaluate(async () => {
       const mb = await IM.loadMediabunny();
-      const r = await IM.Exporter.export(IM.app.project, { resolution: 720, quality: 'medium' });
+      const seen = [];
+      const r = await IM.Exporter.export(IM.app.project, { resolution: 720, quality: 'medium', onProgress: (f, label) => seen.push([f, label]) });
+      const forward = seen.every((x, i) => i === 0 || x[0] >= seen[i - 1][0] - 1e-9);
       const input = new mb.Input({ source: new mb.BlobSource(r.blob), formats: mb.ALL_FORMATS });
       const vt = await input.getPrimaryVideoTrack(), at = await input.getPrimaryAudioTrack();
       let frames = 0;
       const sink = new mb.EncodedPacketSink(vt);
       for await (const pk of sink.packets()) if (pk) frames++;
       return {
-        ext: r.ext, verified: r.verified, video: vt && vt.codec, audio: at && at.codec, frames,
+        ext: r.ext, verified: r.verified, video: vt && vt.codec, audio: at && at.codec, frames, forward, passes: Array.from(new Set(seen.map((x) => x[1]))).join(' > '),
         duration: await input.computeDuration(), movie: IM.Project.layout(IM.app.project).duration,
       };
     });
@@ -116,6 +127,7 @@ const check = (ok, what) => {
     check(Math.abs(res.duration - res.movie) < 0.05, `it plays for ${res.duration.toFixed(3)} s, as long as the movie (${res.movie.toFixed(3)} s)`);
     check(res.frames === Math.round(res.movie * 30), `${res.frames} frames at 30 fps`);
     check(res.verified !== false, 'the renderer’s own verification passed');
+    check(res.forward, `the progress only moved forward (${res.passes})`);
     const bad = errors.filter((e) => !/willReadFrequently|GPU stall|Autofill/.test(e));
     if (bad.length) console.log('page errors:\n  ' + bad.join('\n  '));
     check(!bad.length, 'no page errors');
